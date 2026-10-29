@@ -1,0 +1,31 @@
+[project]
+name = "penny-api"
+version = "0.1.0"
+description = "Typed API and deterministic financial domain for the Penny MVP"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "openai>=2,<3",
+  "pydantic-settings>=2.6,<3",
+  "pyjwt[crypto]>=2.10,<3",
+  "uvicorn[standard]>=0.32,<1",
+]
+
+[dependency-groups]
+dev = [
+  "httpx>=0.28,<1",
+  "pytest>=8.3,<9",
+  "ruff>=0.8,<1",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
