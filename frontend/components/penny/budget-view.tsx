@@ -47,6 +47,8 @@ export function BudgetView({ dashboard, density, onAddTransaction, onEditTransac
         ))}
       </section>
 
+      <TransactionsPanel dashboard={dashboard} title={`Transactions · ${formatMonth(dashboard.active_month)}`} description="Search by merchant, filter by date, category, or type, and expand a row for details." onAdd={onAddTransaction} onEdit={onEditTransaction} onDelete={onDeleteTransaction} />
+
       <section aria-labelledby="category-budgets">
         <SectionHeading
           id="category-budgets"
@@ -119,8 +121,6 @@ export function BudgetView({ dashboard, density, onAddTransaction, onEditTransac
           </ul>
         )}
       </section>
-
-      <TransactionsPanel dashboard={dashboard} title={`Transactions · ${formatMonth(dashboard.active_month)}`} onAdd={onAddTransaction} onEdit={onEditTransaction} onDelete={onDeleteTransaction} />
     </div>
   );
 }

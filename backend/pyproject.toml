@@ -13,15 +13,8 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-  "httpx>=0.28,<1",
-  "pytest>=8.3,<9",
   "ruff>=0.8,<1",
 ]
-
-[tool.pytest.ini_options]
-addopts = "-q"
-testpaths = ["tests"]
-pythonpath = ["."]
 
 [tool.ruff]
 line-length = 100

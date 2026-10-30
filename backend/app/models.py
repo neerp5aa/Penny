@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Annotated, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -72,17 +72,6 @@ class Summary(StrictModel):
     cash_flow_cents: int
     budget_remaining_cents: int
     savings_contributions_cents: int
-
-
-class TransactionAmountInput(StrictModel):
-    amount_cents: int = Field(ge=0)
-    kind: Literal["income", "spending"]
-
-
-class SummaryRequest(StrictModel):
-    transactions: list[TransactionAmountInput]
-    budget_cents: int = Field(ge=0)
-    savings_contributions_cents: list[Annotated[int, Field(ge=0)]]
 
 
 class DemoDashboardResponse(StrictModel):

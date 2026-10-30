@@ -20,6 +20,6 @@ def validate_user_question(question: str) -> str:
     if any(pattern.search(normalized) for pattern in _INJECTION_PATTERNS):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="The question contains instructions that cannot be processed by Council",
+            detail="The question contains instructions that Penny can’t follow",
         )
     return normalized

@@ -61,9 +61,65 @@ class CreditSnapshot(DashboardModel):
     utilization_basis_points: int = Field(ge=0)
 
 
+class AvailabilitySnapshot(DashboardModel):
+    available: Literal[False]
+    title: str
+    explanation: str
+
+
+class FinancialHealthFactor(DashboardModel):
+    id: str
+    label: str
+    score: int = Field(ge=0)
+    max_score: int = Field(gt=0)
+    explanation: str
+
+
+class FinancialHealth(DashboardModel):
+    score: int = Field(ge=0, le=100)
+    weekly_change: int | None
+    factors: list[FinancialHealthFactor]
+    methodology: str
+    limitations: list[str]
+
+
+class FinancialInsight(DashboardModel):
+    id: str
+    headline: str
+    explanation: str
+    action_label: str | None = None
+    destination: Literal["budget", "transactions", "goals", "ai", "credit"]
+    source: str
+
+
+class SpendingClassification(DashboardModel):
+    needs_cents: int = Field(ge=0)
+    wants_cents: int = Field(ge=0)
+    needs_basis_points: int = Field(ge=0, le=10_000)
+    wants_basis_points: int = Field(ge=0, le=10_000)
+
+
+class UpcomingBill(DashboardModel):
+    id: str
+    name: str
+    amount_cents: int = Field(gt=0)
+    due_on: date
+    status: Literal["scheduled", "paid"]
+    payment_source: Literal["user_marked", "not_verified"]
+
+
+class NetWorthSnapshot(DashboardModel):
+    cash_cents: int = Field(ge=0)
+    savings_cents: int = Field(ge=0)
+    investments_cents: int | None
+    liabilities_cents: int = Field(ge=0)
+    net_worth_cents: int
+
+
 class DashboardTotals(Summary):
     available_balance_cents: int
     total_budget_cents: int = Field(ge=0)
+    savings_rate_basis_points: int
 
 
 class DailySpending(DashboardModel):
@@ -87,6 +143,15 @@ class DashboardResponse(DashboardModel):
     category_spending: list[CategorySpending]
     daily_spending: list[DailySpending]
     credit: CreditSnapshot
+    investment_data: AvailabilitySnapshot
+    credit_score_data: AvailabilitySnapshot
+    financial_health: FinancialHealth
+    insights: list[FinancialInsight]
+    spending_classification: SpendingClassification
+    upcoming_bills: list[UpcomingBill]
+    net_worth: NetWorthSnapshot
+    previous_month_cash_flow_cents: int | None
+    spending_power_cents: int = Field(ge=0)
     totals: DashboardTotals
 
 

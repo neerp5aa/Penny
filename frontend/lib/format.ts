@@ -31,14 +31,3 @@ export function addMonths(month: string, count: number): string {
   const index = year * 12 + (monthNumber - 1) + count;
   return `${Math.floor(index / 12)}-${String((index % 12) + 1).padStart(2, "0")}-01`;
 }
-
-export function shortMonth(month: string): string {
-  return new Intl.DateTimeFormat("en-CA", { month: "short", year: "numeric", timeZone: "UTC" }).format(utc(month));
-}
-
-/** Last day to plot for a month: today if it's the current calendar month, otherwise the month's end. */
-export function lastDayToShow(month: string, now = new Date()): number {
-  const [year, monthNumber] = month.split("-").map(Number);
-  const days = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
-  return now.getFullYear() === year && now.getMonth() + 1 === monthNumber ? Math.min(days, now.getDate()) : days;
-}

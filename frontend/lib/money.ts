@@ -1,13 +1,5 @@
 export type Cents = string;
 
-export function addCents(values: readonly Cents[]): Cents {
-  return values.reduce((total, value) => total + BigInt(value), 0n).toString();
-}
-
-export function subtractCents(left: Cents, right: Cents): Cents {
-  return (BigInt(left) - BigInt(right)).toString();
-}
-
 export function formatCad(cents: Cents, showSign = false): string {
   const value = BigInt(cents);
   const negative = value < 0n;
@@ -16,13 +8,6 @@ export function formatCad(cents: Cents, showSign = false): string {
   const remainder = (absolute % 100n).toString().padStart(2, "0");
   const sign = negative ? "−" : showSign && value > 0n ? "+" : "";
   return `${sign}$${dollars}.${remainder}`;
-}
-
-export function percentageBasisPoints(part: Cents, whole: Cents): number {
-  const denominator = BigInt(whole);
-  if (denominator <= 0n) return 0;
-  const basisPoints = (BigInt(part) * 10_000n) / denominator;
-  return Number(basisPoints > 10_000n ? 10_000n : basisPoints) / 100;
 }
 
 export function parseCadToCents(input: string): number {

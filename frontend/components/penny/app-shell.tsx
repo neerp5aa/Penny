@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronLeft, ChevronRight, LayoutGrid, LayoutList, LogOut, Monitor, Moon, Plus, Rows3, ShieldCheck, SlidersHorizontal, Square, Sun, Undo2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, LayoutGrid, LayoutList, LogOut, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Plus, Rows3, ShieldCheck, SlidersHorizontal, Square, Sun, Undo2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -13,21 +13,21 @@ import { cn } from "@/lib/utils";
 import { DENSITY_OPTIONS, type Density, THEME_OPTIONS, type ThemeSetting, usePreferences } from "./preferences";
 import { NAVIGATION, type View } from "./shared";
 
-const MONTH_VIEWS: View[] = ["home", "budget"];
+const MONTH_VIEWS: View[] = ["overview", "transactions"];
 const DENSITY_ICONS: Record<Density, typeof Square> = { simple: Square, compact: Rows3, detailed: LayoutGrid };
 const THEME_ICONS: Record<ThemeSetting, typeof Sun> = { light: Sun, dark: Moon, system: Monitor };
 
 export const SHORTCUTS: { keys: string; action: string }[] = [
   { keys: "N", action: "Add a transaction" },
   { keys: "[  ]", action: "Previous / next month" },
-  { keys: "1 – 6", action: "Home, Budget, Insights, Council, Learn, Credit" },
+  { keys: "1 – 8", action: "Jump between primary sections" },
   { keys: "D", action: "Switch light / dark" },
   { keys: "?", action: "Open display settings" },
 ];
 
 export function BrandMark({ className }: { className?: string }) {
   return (
-    <span className={cn("grid size-10 shrink-0 place-items-center rounded-xl bg-hero text-white", className)} aria-hidden="true">
+    <span className={cn("grid size-10 shrink-0 place-items-center rounded-xl bg-[linear-gradient(135deg,#173f5f,#15977f)] text-white shadow-sm", className)} aria-hidden="true">
       <svg viewBox="0 0 64 64" className="size-6"><path d="M22 48V16h12a10 10 0 0 1 0 20h-6" fill="none" stroke="currentColor" strokeWidth="6" strokeLinecap="round" strokeLinejoin="round" /><circle cx="44" cy="46" r="4" fill="var(--color-gold)" /></svg>
     </span>
   );
@@ -71,30 +71,29 @@ function AccountSummary({ dashboard }: { dashboard: Dashboard }) {
   );
 }
 
-export function Sidebar({ active, dashboard, onNavigate, onOpenDisplay }: { active: View; dashboard: Dashboard; onNavigate: (view: View) => void; onOpenDisplay: () => void }) {
+export function Sidebar({ active, dashboard, collapsed, onToggle, onNavigate, onOpenDisplay }: { active: View; dashboard: Dashboard; collapsed: boolean; onToggle: () => void; onNavigate: (view: View) => void; onOpenDisplay: () => void }) {
   return (
-    <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col overflow-y-auto border-r border-line bg-canvas px-4 py-5 lg:flex">
-      <div className="flex items-center gap-3 px-2">
+    <aside data-collapsed={collapsed} className={cn("fixed inset-y-0 left-0 z-30 hidden flex-col overflow-y-auto border-r border-line bg-canvas py-5 transition-[width] duration-200 lg:flex", collapsed ? "w-20 px-3" : "w-64 px-4")}>
+      <div className={cn("flex items-center gap-3 px-2", collapsed && "justify-center px-0")}>
         <BrandMark />
-        <div><p className="text-lg font-semibold tracking-tight text-ink">Penny</p><p className="text-xs text-ink-subtle">Make money make sense</p></div>
+        {!collapsed && <div><p className="text-lg font-semibold tracking-tight text-ink">Penny</p><p className="text-xs text-ink-subtle">Make money make sense</p></div>}
       </div>
       <nav aria-label="Primary" className="mt-8">
         <ul className="space-y-1">
           {NAVIGATION.map(({ id, label, icon: Icon }) => (
             <li key={id}>
-              <button type="button" onClick={() => onNavigate(id)} aria-current={active === id ? "page" : undefined} className={cn("relative flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-sm font-medium transition-colors duration-150", active === id ? "bg-sage text-primary before:absolute before:inset-y-2 before:left-0 before:w-1 before:rounded-full before:bg-accent" : "text-ink-muted hover:bg-sage-soft hover:text-ink")}>
-                <Icon className="size-5" aria-hidden="true" />{label}
+              <button type="button" title={collapsed ? label : undefined} onClick={() => onNavigate(id)} aria-current={active === id ? "page" : undefined} className={cn("relative flex min-h-11 w-full items-center rounded-xl text-sm font-medium transition-colors duration-150", collapsed ? "justify-center px-0" : "gap-3 px-3", active === id ? "bg-sage text-primary before:absolute before:inset-y-2 before:left-0 before:w-1 before:rounded-full before:bg-accent" : "text-ink-muted hover:bg-sage-soft hover:text-ink")}>
+                <Icon className="size-5 shrink-0" aria-hidden="true" />{!collapsed && label}
               </button>
             </li>
           ))}
         </ul>
       </nav>
       <div className="mt-auto space-y-3 pt-6">
-        <button type="button" onClick={onOpenDisplay} className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-sm font-medium text-ink-muted transition-colors hover:bg-sage-soft hover:text-ink">
-          <SlidersHorizontal className="size-5" aria-hidden="true" />Display settings
+        <button type="button" onClick={onToggle} title={collapsed ? "Expand sidebar" : "Collapse sidebar"} className={cn("flex min-h-11 w-full items-center rounded-xl text-sm font-medium text-ink-muted hover:bg-sage-soft hover:text-ink", collapsed ? "justify-center" : "gap-3 px-3")}>
+          {collapsed ? <PanelLeftOpen className="size-5" /> : <><PanelLeftClose className="size-5" />Collapse sidebar</>}
         </button>
-        <p className="flex items-start gap-2 rounded-xl bg-sage-soft p-3 text-xs leading-relaxed text-ink-muted"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden="true" />All accounts and amounts are fictional. No bank is connected.</p>
-        <AccountSummary dashboard={dashboard} />
+        {!collapsed && <><button type="button" onClick={onOpenDisplay} className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-sm font-medium text-ink-muted transition-colors hover:bg-sage-soft hover:text-ink"><SlidersHorizontal className="size-5" aria-hidden="true" />Display settings</button><p className="flex items-start gap-2 rounded-xl bg-sage-soft p-3 text-xs leading-relaxed text-ink-muted"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden="true" />All accounts and amounts are fictional. No bank is connected.</p><AccountSummary dashboard={dashboard} /></>}
       </div>
     </aside>
   );
@@ -103,9 +102,9 @@ export function Sidebar({ active, dashboard, onNavigate, onOpenDisplay }: { acti
 export function MobileNavigation({ active, onNavigate }: { active: View; onNavigate: (view: View) => void }) {
   return (
     <nav aria-label="Primary" className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-surface/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md lg:hidden">
-      <ul className="mx-auto grid max-w-2xl grid-cols-6">
+      <ul className="mx-auto flex max-w-3xl overflow-x-auto">
         {NAVIGATION.map(({ id, label, icon: Icon }) => (
-          <li key={id}>
+          <li key={id} className="min-w-16 flex-1">
             <button type="button" onClick={() => onNavigate(id)} aria-current={active === id ? "page" : undefined} className={cn("flex min-h-16 w-full flex-col items-center justify-center gap-1 text-[11px] font-medium transition-colors", active === id ? "text-primary" : "text-ink-subtle hover:text-ink")}>
               <span className={cn("grid h-7 w-11 place-items-center rounded-full transition-colors duration-150", active === id && "bg-sage")}><Icon className="size-5" aria-hidden="true" /></span>
               {label}
@@ -233,11 +232,11 @@ export function PageHeader({ view, dashboard, monthLoading, onChangeMonth, onAdd
   const item = NAVIGATION.find((entry) => entry.id === view) ?? NAVIGATION[0];
   const firstName = dashboard.profile.display_name.split(" ")[0];
   const isCurrent = dashboard.active_month === dashboard.current_month;
-  const pastHome = view === "home" && !isCurrent;
-  const title = view === "home" ? (isCurrent ? `${greeting()}, ${firstName}` : `${formatMonth(dashboard.active_month)} in review`) : item.title;
-  const description = pastHome ? "You’re looking back at a past month. Balances and goals show today’s values." : view === "home" ? "Here’s where your money stands this month." : item.description;
+  const pastHome = view === "overview" && !isCurrent;
+  const title = view === "overview" ? (isCurrent ? `${greeting()}.` : `${formatMonth(dashboard.active_month)} in review`) : item.title;
+  const description = pastHome ? "You’re looking back at a past month. Balances and goals show today’s values." : view === "overview" ? `A clear view of ${firstName}’s financial position.` : item.description;
   const showMonth = MONTH_VIEWS.includes(view);
-  const showAdd = view === "home" || view === "budget";
+  const showAdd = view === "overview" || view === "transactions";
   return (
     <header className="sticky top-0 z-20 border-b border-line/70 bg-canvas/90 pt-[env(safe-area-inset-top)] backdrop-blur-md">
       <div className="mx-auto max-w-7xl px-4 py-3 sm:px-6 lg:px-10 lg:py-4">
@@ -280,6 +279,56 @@ export function MobileAccount({ dashboard, onOpenDisplay }: { dashboard: Dashboa
     <div className="space-y-3 lg:hidden">
       <AccountSummary dashboard={dashboard} />
       <Button variant="outline" className="w-full" onClick={onOpenDisplay}><SlidersHorizontal className="size-4" aria-hidden="true" />Display settings</Button>
+    </div>
+  );
+}
+
+const DEFAULT_NOTIFICATIONS = { bills: true, budgets: true, goals: true, insights: false };
+
+/** Saved notification choices, or the defaults when storage is blocked or invalid. */
+function savedNotifications(): typeof DEFAULT_NOTIFICATIONS {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem("penny-notifications") ?? "null") as Record<string, unknown> | null;
+    if (parsed && Object.keys(DEFAULT_NOTIFICATIONS).every((key) => typeof parsed[key] === "boolean")) return parsed as typeof DEFAULT_NOTIFICATIONS;
+  } catch { /* Fall through to defaults. */ }
+  return DEFAULT_NOTIFICATIONS;
+}
+
+export function SettingsView() {
+  // Rendered only on the client after the dashboard loads, so reading storage here is safe.
+  const [notifications, setNotifications] = useState(savedNotifications);
+  useEffect(() => {
+    try { window.localStorage.setItem("penny-notifications", JSON.stringify(notifications)); } catch { /* Keep the in-memory choice. */ }
+  }, [notifications]);
+  const toggle = (key: keyof typeof notifications) => setNotifications((value) => ({ ...value, [key]: !value[key] }));
+  return (
+    <div className="mx-auto max-w-3xl space-y-6">
+      <section className="rounded-[var(--radius-card)] border border-line bg-surface p-5 shadow-[var(--shadow-card)] sm:p-6">
+        <h2 className="text-lg font-semibold text-ink">Appearance</h2>
+        <p className="mt-1 text-sm text-ink-subtle">Choose a density and theme that make financial information easiest to scan.</p>
+        <div className="mt-5 flex flex-wrap items-center gap-3"><DensitySwitch /><ThemeToggle /></div>
+      </section>
+      <section className="rounded-[var(--radius-card)] border border-line bg-surface p-5 shadow-[var(--shadow-card)] sm:p-6">
+        <h2 className="flex items-center gap-2 text-lg font-semibold text-ink"><span className="grid size-8 place-items-center rounded-lg bg-sage"><SlidersHorizontal className="size-4" /></span>Notification preferences</h2>
+        <p className="mt-1 text-sm text-ink-subtle">These demo preferences stay on this device. Penny does not send push notifications yet.</p>
+        <div className="mt-4 divide-y divide-line">
+          {([
+            ["bills", "Upcoming bills", "Reminders for fictional bills approaching their due date."],
+            ["budgets", "Budget changes", "Warnings when recorded spending moves above a category limit."],
+            ["goals", "Goal milestones", "Updates when a savings goal reaches a meaningful milestone."],
+            ["insights", "New insights", "Occasional notices when Penny detects a useful change."],
+          ] as const).map(([key, label, description]) => (
+            <label key={key} className="flex cursor-pointer items-center justify-between gap-4 py-4">
+              <span><span className="block text-sm font-semibold text-ink">{label}</span><span className="mt-0.5 block text-sm text-ink-subtle">{description}</span></span>
+              <input type="checkbox" checked={notifications[key]} onChange={() => toggle(key)} className="size-5 accent-black dark:accent-white" />
+            </label>
+          ))}
+        </div>
+      </section>
+      <section className="rounded-[var(--radius-card)] border border-line bg-surface p-5 sm:p-6">
+        <h2 className="text-lg font-semibold text-ink">Privacy and data</h2>
+        <p className="mt-2 text-sm leading-relaxed text-ink-muted">Penny currently uses fictional demo data. Authentication remains isolated through Supabase, and no bank, brokerage, or credit bureau is connected.</p>
+      </section>
     </div>
   );
 }

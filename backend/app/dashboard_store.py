@@ -8,6 +8,7 @@ from fastapi import HTTPException, status
 
 from app.config import get_settings
 from app.dashboard_models import (
+    AvailabilitySnapshot,
     BudgetPatch,
     BudgetWrite,
     Category,
@@ -16,6 +17,9 @@ from app.dashboard_models import (
     DailySpending,
     DashboardResponse,
     DashboardTotals,
+    FinancialHealth,
+    FinancialHealthFactor,
+    FinancialInsight,
     Goal,
     GoalPatch,
     GoalWrite,
@@ -24,10 +28,14 @@ from app.dashboard_models import (
     HistoryTotals,
     Mission,
     MonthlyBudget,
+    NetWorthSnapshot,
+    SpendingClassification,
     TransactionPatch,
     TransactionWrite,
+    UpcomingBill,
 )
 from app.domain.finance import (
+    FinancialSummary,
     TransactionAmount,
     TransactionKind,
     average_cents,
@@ -47,6 +55,12 @@ def month_start(value: date) -> date:
 
 def _next_month(value: date) -> date:
     return date(value.year + value.month // 12, value.month % 12 + 1, 1)
+
+
+def _previous_month(value: date) -> date:
+    return date(
+        value.year - (1 if value.month == 1 else 0), 12 if value.month == 1 else value.month - 1, 1
+    )
 
 
 def _same_month(value: date, month: date) -> bool:
@@ -150,12 +164,220 @@ class DashboardStore:
             Mission(
                 id="mission-council",
                 title="Ask before a big purchase",
-                description="Ask the Council about something you are thinking of buying.",
+                description="Ask Penny AI about something you are thinking of buying.",
                 xp_reward=50,
                 completed=False,
             ),
         ]
+        self._bills = {
+            "bill-rent": UpcomingBill(
+                id="bill-rent",
+                name="Student housing",
+                amount_cents=82_500,
+                due_on=date(2026, 11, 1),
+                status="scheduled",
+                payment_source="not_verified",
+            ),
+            "bill-phone": UpcomingBill(
+                id="bill-phone",
+                name="Mobile plan",
+                amount_cents=4_500,
+                due_on=date(2026, 11, 14),
+                status="scheduled",
+                payment_source="not_verified",
+            ),
+            "bill-streaming": UpcomingBill(
+                id="bill-streaming",
+                name="Streaming subscription",
+                amount_cents=1_299,
+                due_on=date(2026, 11, 18),
+                status="scheduled",
+                payment_source="not_verified",
+            ),
+        }
         self._lock = RLock()
+
+    def _financial_health(
+        self,
+        month: date,
+        spending_cents: int,
+        budget_cents: int,
+        cash_flow_cents: int,
+    ) -> FinancialHealth:
+        previous = self._monthly_transactions(_previous_month(month))
+        previous_income = sum(item.amount_cents for item in previous if item.kind == "income")
+        previous_spending = sum(item.amount_cents for item in previous if item.kind == "spending")
+        previous_cash_flow = previous_income - previous_spending
+
+        factors: list[FinancialHealthFactor] = []
+        limitations = [
+            "No verified bill-payment history is available, so it is not scored.",
+            "Weekly score history is not stored yet, so no weekly change is shown.",
+            "This is an educational indicator for fictional demo data, not a credit score.",
+        ]
+        if budget_cents:
+            over = max(0, spending_cents - budget_cents)
+            budget_score = max(0, 35 - min(35, over * 35 // budget_cents))
+            budget_explanation = (
+                "Full points because spending is within the monthly plan."
+                if over == 0
+                else "Reduced only for the share spent above the monthly plan."
+            )
+            factors.append(
+                FinancialHealthFactor(
+                    id="budget",
+                    label="Budget adherence",
+                    score=budget_score,
+                    max_score=35,
+                    explanation=budget_explanation,
+                )
+            )
+        else:
+            limitations.append("No monthly budget is available, so budget adherence is excluded.")
+
+        savings_score = (
+            30
+            if cash_flow_cents > 0 and previous_cash_flow > 0
+            else 20
+            if cash_flow_cents > 0
+            else 0
+        )
+        if self._monthly_transactions(month):
+            factors.append(
+                FinancialHealthFactor(
+                    id="savings",
+                    label="Savings consistency",
+                    score=savings_score,
+                    max_score=30,
+                    explanation=(
+                        "Uses positive monthly cash flow in this month and the previous month; "
+                        "income level itself is not scored."
+                    ),
+                )
+            )
+        else:
+            limitations.append(
+                "No activity is available for this month, so savings consistency is excluded."
+            )
+        active_goals = [item for item in self._goals.values() if item["status"] == "active"]
+        average_goal_progress = (
+            sum(
+                min(10_000, item["current_cents"] * 10_000 // item["target_cents"])
+                for item in active_goals
+            )
+            // len(active_goals)
+            if active_goals
+            else 0
+        )
+        goal_score = average_goal_progress * 20 // 10_000
+        if active_goals:
+            factors.append(
+                FinancialHealthFactor(
+                    id="goals",
+                    label="Goal progress",
+                    score=goal_score,
+                    max_score=20,
+                    explanation="Uses the average progress of active fictional savings goals.",
+                )
+            )
+        else:
+            limitations.append(
+                "No active savings goals are available, so goal progress is excluded."
+            )
+        if previous_spending:
+            change = abs(spending_cents - previous_spending) * 10_000 // previous_spending
+            stability_score = 15 if change <= 1_000 else 10 if change <= 2_500 else 5
+            factors.append(
+                FinancialHealthFactor(
+                    id="stability",
+                    label="Spending stability",
+                    score=stability_score,
+                    max_score=15,
+                    explanation="Based on how sharply total spending changed from the prior month.",
+                )
+            )
+        else:
+            limitations.append(
+                "Not enough prior spending data is available, so stability is excluded."
+            )
+        available_points = sum(item.max_score for item in factors)
+        return FinancialHealth(
+            score=sum(item.score for item in factors) * 100 // available_points
+            if available_points
+            else 0,
+            weekly_change=None,
+            factors=factors,
+            methodology=(
+                "A behaviour-based score from budget adherence, positive cash flow, goal progress, "
+                "and month-to-month spending stability. Lower income is never penalized."
+            ),
+            limitations=limitations,
+        )
+
+    def _insights(
+        self,
+        summary: FinancialSummary,
+        breakdown: list[CategorySpending],
+    ) -> list[FinancialInsight]:
+        cash_flow = summary.cash_flow_cents
+        budget_left = summary.budget_remaining_cents
+        larger, smaller = ("income", "spending") if cash_flow >= 0 else ("spending", "income")
+        insights = [
+            FinancialInsight(
+                id="cash-flow",
+                headline=(
+                    "You are on track to keep money this month"
+                    if cash_flow >= 0
+                    else "Spending is ahead of income this month"
+                ),
+                explanation=(
+                    f"Current {larger} is higher than {smaller}, "
+                    "based on this month’s recorded transactions."
+                ),
+                action_label="Review cash flow",
+                destination="transactions",
+                source="Income minus spending from the active month",
+            )
+        ]
+        if budget_left >= 0:
+            insights.append(
+                FinancialInsight(
+                    id="budget-room",
+                    headline="Your spending plan still has room",
+                    explanation=(
+                        "Total recorded spending remains within the combined category limits."
+                    ),
+                    action_label="See category limits",
+                    destination="budget",
+                    source="Monthly budget limits minus categorized spending",
+                )
+            )
+        else:
+            insights.append(
+                FinancialInsight(
+                    id="budget-over",
+                    headline="Your monthly plan needs attention",
+                    explanation="Total recorded spending is above the combined category limits.",
+                    action_label="Review budgets",
+                    destination="budget",
+                    source="Monthly budget limits minus spending",
+                )
+            )
+        if breakdown:
+            top = breakdown[0]
+            insights.append(
+                FinancialInsight(
+                    id="top-category",
+                    headline=f"{top.category_name} is your largest spending category",
+                    explanation=(
+                        "It currently represents the largest share of recorded spending this month."
+                    ),
+                    action_label="Inspect transactions",
+                    destination="transactions",
+                    source="Category share of active-month spending",
+                )
+            )
+        return insights[:3]
 
     def _monthly_transactions(self, month: date) -> list[Transaction]:
         return [
@@ -253,6 +475,47 @@ class DashboardStore:
                 for item in self._accounts.values()
                 if item.account_type != "credit"
             )
+            cash_balance = sum(
+                item.balance_cents
+                for item in self._accounts.values()
+                if item.account_type == "chequing"
+            )
+            savings_balance = sum(
+                item.balance_cents
+                for item in self._accounts.values()
+                if item.account_type == "savings"
+            )
+            needs_ids = {
+                "cat-housing",
+                "cat-food",
+                "cat-transport",
+                "cat-phone",
+                "cat-school",
+                "cat-health",
+            }
+            needs = sum(
+                amount
+                for category_id, amount in spending_by_category.items()
+                if category_id in needs_ids
+            )
+            wants = sum(
+                amount
+                for category_id, amount in spending_by_category.items()
+                if category_id not in needs_ids
+            )
+            spending_total = needs + wants
+            previous_transactions = self._monthly_transactions(_previous_month(month))
+            previous_cash_flow = (
+                sum(item.amount_cents for item in previous_transactions if item.kind == "income")
+                - sum(
+                    item.amount_cents for item in previous_transactions if item.kind == "spending"
+                )
+                if previous_transactions
+                else None
+            )
+            unpaid_bills = sum(
+                item.amount_cents for item in self._bills.values() if item.status == "scheduled"
+            )
             return DashboardResponse(
                 active_month=month,
                 current_month=self.active_month,
@@ -274,10 +537,53 @@ class DashboardStore:
                     credit_limit_cents=credit_limit,
                     utilization_basis_points=credit_account.balance_cents * 10_000 // credit_limit,
                 ),
+                investment_data=AvailabilitySnapshot(
+                    available=False,
+                    title="Investment data unavailable",
+                    explanation=(
+                        "Penny does not connect to brokerages or provide investment "
+                        "recommendations in this MVP."
+                    ),
+                ),
+                credit_score_data=AvailabilitySnapshot(
+                    available=False,
+                    title="Credit score unavailable",
+                    explanation=(
+                        "No verified Canadian credit-bureau data source is connected. Penny only "
+                        "provides educational utilization guidance."
+                    ),
+                ),
+                financial_health=self._financial_health(
+                    month, summary.spending_cents, total_budget, summary.cash_flow_cents
+                ),
+                insights=self._insights(summary, breakdown),
+                spending_classification=SpendingClassification(
+                    needs_cents=needs,
+                    wants_cents=wants,
+                    needs_basis_points=share_basis_points(needs, spending_total),
+                    wants_basis_points=share_basis_points(wants, spending_total),
+                ),
+                upcoming_bills=sorted(self._bills.values(), key=lambda item: item.due_on),
+                net_worth=NetWorthSnapshot(
+                    cash_cents=cash_balance,
+                    savings_cents=savings_balance,
+                    investments_cents=None,
+                    liabilities_cents=credit_account.balance_cents,
+                    net_worth_cents=asset_balance - credit_account.balance_cents,
+                ),
+                previous_month_cash_flow_cents=previous_cash_flow,
+                spending_power_cents=max(
+                    0, min(summary.budget_remaining_cents, asset_balance - unpaid_bills)
+                ),
                 totals=DashboardTotals(
                     **asdict(summary),
                     available_balance_cents=asset_balance,
                     total_budget_cents=total_budget,
+                    savings_rate_basis_points=(
+                        summary.cash_flow_cents * 10_000 // summary.income_cents
+                    )
+                    if summary.income_cents
+                    else 0,
                 ),
             )
 
@@ -402,6 +708,17 @@ class DashboardStore:
             self._missions[index] = self._missions[index].model_copy(update={"completed": True})
             return self._snapshot()
 
+    def mark_bill_paid(self, user_id: str, bill_id: str) -> DashboardResponse:
+        with self._lock:
+            self.require_owner(user_id)
+            bill = self._bills.get(bill_id)
+            if not bill:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Upcoming bill not found")
+            self._bills[bill_id] = bill.model_copy(
+                update={"status": "paid", "payment_source": "user_marked"}
+            )
+            return self._snapshot()
+
     def is_owner(self, user_id: str) -> bool:
         return user_id in self._owner_user_ids
 
@@ -448,6 +765,27 @@ class DashboardStore:
             )
             if goal["current_cents"] >= goal["target_cents"]:
                 goal["status"] = "completed"
+            return self._snapshot()
+
+    def apply_approved_budget_limit(
+        self,
+        user_id: str,
+        budget_id: str,
+        expected_limit_cents: int,
+        new_limit_cents: int,
+    ) -> DashboardResponse:
+        with self._lock:
+            self.require_owner(user_id)
+            budget = self._budgets.get(budget_id)
+            if not budget:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Budget not found")
+            if budget["limit_cents"] != expected_limit_cents:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT, "Budget changed after this proposal was created"
+                )
+            if new_limit_cents < 0:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invalid budget limit")
+            budget["limit_cents"] = new_limit_cents
             return self._snapshot()
 
     def create_transaction(self, user_id: str, request: TransactionWrite) -> DashboardResponse:

@@ -32,6 +32,7 @@ const KIND_OPTIONS: { value: KindFilter; label: string }[] = [
 export function TransactionsPanel({ dashboard, title, description, limit, onViewAll, onAdd, onEdit, onDelete }: Props) {
   const [filters, setFilters] = useState<TransactionFilters>(EMPTY_FILTERS);
   const [sort, setSort] = useState<TransactionSort>("newest");
+  const [expanded, setExpanded] = useState<string | null>(null);
   const sortId = useId();
   const headingId = useId();
   const searchId = useId();
@@ -70,13 +71,13 @@ export function TransactionsPanel({ dashboard, title, description, limit, onView
       </div>
 
       {!recentMode && total > 0 && (
-        <div className="grid gap-2 border-b border-line px-5 pb-4 sm:grid-cols-2 sm:px-6 xl:grid-cols-[minmax(0,1fr)_auto_minmax(9rem,12rem)_minmax(9rem,11rem)]" role="search" aria-label="Filter transactions">
+        <div className="grid gap-2 border-b border-line px-5 pb-4 sm:grid-cols-2 sm:px-6 xl:grid-cols-6" role="search" aria-label="Filter transactions">
           <div className="relative sm:col-span-2 xl:col-span-1">
             <label htmlFor={searchId} className="sr-only">Search by description</label>
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-ink-subtle" aria-hidden="true" />
             <Input id={searchId} type="search" placeholder="Search transactions" value={filters.query} onChange={(event) => setFilters({ ...filters, query: event.target.value })} className="pl-9" />
           </div>
-          <div role="radiogroup" aria-label="Transaction type" className="grid grid-cols-3 gap-1 rounded-xl bg-sage-soft p-1">
+          <div role="radiogroup" aria-label="Transaction type" className="grid grid-cols-3 gap-1 rounded-xl bg-sage-soft p-1 xl:col-span-2">
             {KIND_OPTIONS.map((option) => (
               <button key={option.value} type="button" role="radio" aria-checked={filters.kind === option.value} onClick={() => setFilters({ ...filters, kind: option.value })} className={cn("min-h-9 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors", filters.kind === option.value ? "bg-surface text-ink shadow-sm" : "text-ink-muted hover:text-ink")}>
                 {option.label}
@@ -100,6 +101,8 @@ export function TransactionsPanel({ dashboard, title, description, limit, onView
               <option value="smallest">Smallest amount</option>
             </Select>
           </div>
+          <div><label className="sr-only" htmlFor={`${searchId}-from`}>From date</label><Input id={`${searchId}-from`} type="date" value={filters.from} onChange={(event) => setFilters({ ...filters, from: event.target.value })} /></div>
+          <div><label className="sr-only" htmlFor={`${searchId}-to`}>To date</label><Input id={`${searchId}-to`} type="date" value={filters.to} onChange={(event) => setFilters({ ...filters, to: event.target.value })} /></div>
         </div>
       )}
 
@@ -134,12 +137,13 @@ export function TransactionsPanel({ dashboard, title, description, limit, onView
                 return (
                   <tr key={item.id} className="group transition-colors hover:bg-sage-soft/60">
                     <td className="border-b border-line/70 p-0 group-last:border-b-0 md:py-3 md:pl-6 md:pr-3 compact:md:py-1.5">
-                      <button type="button" onClick={() => onEdit(item)} className="flex w-full min-w-0 items-center gap-3 px-5 py-3 text-left compact:py-2 md:hidden" aria-label={`${item.description}, ${income ? "money in" : "money out"} ${cad(item.amount_cents)}, ${item.category}, ${formatShortDate(item.occurred_on)}. Edit or delete`}>
+                      <button type="button" onClick={() => setExpanded(expanded === item.id ? null : item.id)} className="flex w-full min-w-0 items-center gap-3 px-5 py-3 text-left compact:py-2 md:hidden" aria-expanded={expanded === item.id} aria-label={`${item.description}, ${income ? "money in" : "money out"} ${cad(item.amount_cents)}, ${item.category}, ${formatShortDate(item.occurred_on)}. Show details`}>
                         <TransactionIdentity item={item} />
                         <span className={cn("tabular whitespace-nowrap shrink-0 font-semibold", income ? "text-accent-strong" : "text-ink")}>{income ? cad(item.amount_cents, true) : cad(-item.amount_cents)}</span>
                         <ChevronRight className="size-4 shrink-0 text-ink-subtle" aria-hidden="true" />
                       </button>
-                      <div className="hidden min-w-0 items-center gap-3 md:flex"><TransactionIdentity item={item} /></div>
+                      <button type="button" onClick={() => setExpanded(expanded === item.id ? null : item.id)} aria-expanded={expanded === item.id} className="hidden min-w-0 items-center gap-3 text-left md:flex"><TransactionIdentity item={item} /></button>
+                      {expanded === item.id && <div className="mx-5 mb-3 rounded-xl bg-sage-soft p-3 text-xs text-ink-muted md:mx-0 md:mb-0 md:mt-2"><p>{income ? "Income" : "Expense"} · {accounts.get(item.account_id) ?? "Unknown account"}</p><div className="mt-2 flex gap-2 md:hidden"><Button size="sm" variant="outline" onClick={() => onEdit(item)}>Edit</Button><Button size="sm" variant="destructive-soft" onClick={() => onDelete(item)}>Delete</Button></div></div>}
                     </td>
                     <td className="hidden truncate border-b border-line/70 px-3 py-3 text-ink-muted group-last:border-b-0 lg:table-cell">{accounts.get(item.account_id) ?? "—"}</td>
                     <td className={cn("tabular whitespace-nowrap hidden whitespace-nowrap border-b border-line/70 px-3 py-3 text-right font-semibold group-last:border-b-0 md:table-cell", income ? "text-accent-strong" : "text-ink")}>

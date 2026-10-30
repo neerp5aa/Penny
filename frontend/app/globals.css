@@ -13,44 +13,44 @@
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 
-  --color-canvas: #f7f8f5;
+  --color-canvas: #f6f8fb;
   --color-surface: #ffffff;
-  --color-sage: #e5ece8;
-  --color-sage-soft: #f0f4f1;
-  --color-line: #dfe6e2;
-  --color-line-strong: #c5d1cb;
+  --color-sage: #e5f1ed;
+  --color-sage-soft: #f0f7f5;
+  --color-line: #dfe6e9;
+  --color-line-strong: #c8d4d8;
 
-  --color-ink: #1f2933;
-  --color-ink-muted: #4f5b67;
-  --color-ink-subtle: #5f6b78;
+  --color-ink: #17212b;
+  --color-ink-muted: #4d5e6b;
+  --color-ink-subtle: #687986;
 
-  --color-primary: #123c35;
-  --color-primary-hover: #0b2a25;
-  --color-primary-soft: #dcebe5;
+  --color-primary: #173f5f;
+  --color-primary-hover: #0f2f49;
+  --color-primary-soft: #e7f0f7;
   --color-on-primary: #ffffff;
   /* Large brand panels (balance card, Council recommendation). Deep green in both themes. */
-  --color-hero: #123c35;
-  --color-overlay: rgb(18 60 53 / 0.4);
+  --color-hero: #173f5f;
+  --color-overlay: rgb(15 47 73 / 0.48);
 
-  --color-accent: #2d8b74;
-  --color-accent-strong: #1d6b58;
-  --color-accent-soft: #e3f1ec;
+  --color-accent: #15977f;
+  --color-accent-strong: #087563;
+  --color-accent-soft: #e0f5f0;
 
-  --color-gold: #d6a65d;
-  --color-gold-strong: #855f1c;
-  --color-gold-soft: #f8efdf;
+  --color-gold: #efad3d;
+  --color-gold-strong: #875807;
+  --color-gold-soft: #fff2d5;
 
-  --color-danger: #b42318;
-  --color-danger-hover: #912018;
+  --color-danger: #c94f45;
+  --color-danger-hover: #aa3b33;
   --color-on-danger: #ffffff;
-  --color-danger-soft: #fdecea;
-  --color-danger-soft-hover: #fbd9d5;
-  --color-info: #2f6690;
-  --color-info-soft: #e7eff6;
+  --color-danger-soft: #fdeceb;
+  --color-danger-soft-hover: #f9d9d6;
+  --color-info: #356fc4;
+  --color-info-soft: #e8f0fc;
 
   --radius-card: 1.25rem;
-  --shadow-card: 0 1px 2px rgb(18 60 53 / 0.04), 0 2px 8px rgb(18 60 53 / 0.04);
-  --shadow-raised: 0 8px 24px rgb(18 60 53 / 0.1), 0 2px 6px rgb(18 60 53 / 0.06);
+  --shadow-card: 0 1px 2px rgb(23 63 95 / 0.04), 0 5px 18px rgb(23 63 95 / 0.045);
+  --shadow-raised: 0 14px 40px rgb(23 63 95 / 0.16), 0 2px 6px rgb(23 63 95 / 0.06);
 
   --animate-enter: enter 220ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
   --animate-fade: fade 180ms ease-out both;
@@ -62,70 +62,70 @@
  * Categories keep a fixed slot per category (colour follows the entity, never its rank).
  */
 :root {
-  --chart-in: #0e9470;
-  --chart-out: #e07b2e;
-  --chart-net: #1f2933;
-  --chart-cat-1: #2a78d6;
-  --chart-cat-2: #eb6834;
-  --chart-cat-3: #1baf7a;
-  --chart-cat-4: #eda100;
-  --chart-cat-5: #e87ba4;
-  --chart-cat-6: #008300;
-  --chart-cat-7: #6250d6;
-  --chart-other: #9aa5b1;
-  --chart-grid: #e6ebe8;
-  --chart-axis: #c5d1cb;
-  --chart-reference: #9aa5b1;
+  --chart-in: #15977f;
+  --chart-out: #e4815f;
+  --chart-net: #356fc4;
+  --chart-cat-1: #356fc4;
+  --chart-cat-2: #e4815f;
+  --chart-cat-3: #15977f;
+  --chart-cat-4: #efad3d;
+  --chart-cat-5: #9c6ade;
+  --chart-cat-6: #43a1a8;
+  --chart-cat-7: #d36f9c;
+  --chart-other: #94a3ad;
+  --chart-grid: #e7edef;
+  --chart-axis: #c8d4d8;
+  --chart-reference: #8798a4;
 }
 
 /* Dark palette: its own validated steps, not an automatic inversion. */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --color-canvas: #0f1714;
-  --color-surface: #16201c;
-  --color-sage: #24322c;
-  --color-sage-soft: #1b2722;
-  --color-line: #2a3832;
-  --color-line-strong: #3b4b44;
-  --color-ink: #e7ece9;
-  --color-ink-muted: #b8c4be;
-  --color-ink-subtle: #96a59e;
-  --color-primary: #8fd1bd;
-  --color-primary-hover: #a9dccb;
-  --color-primary-soft: #1f3a33;
-  --color-on-primary: #0b2a25;
-  --color-hero: #1b4a40;
+  --color-canvas: #0d1720;
+  --color-surface: #15232e;
+  --color-sage: #203a3b;
+  --color-sage-soft: #192d34;
+  --color-line: #29404d;
+  --color-line-strong: #3a5563;
+  --color-ink: #f3f7f8;
+  --color-ink-muted: #b6c6cc;
+  --color-ink-subtle: #91a7b0;
+  --color-primary: #81b9e6;
+  --color-primary-hover: #a1cef0;
+  --color-primary-soft: #233c50;
+  --color-on-primary: #102433;
+  --color-hero: #174664;
   --color-overlay: rgb(0 0 0 / 0.6);
-  --color-accent: #4fb397;
-  --color-accent-strong: #7fd0b6;
-  --color-accent-soft: #1c3a31;
-  --color-gold: #d6a65d;
-  --color-gold-strong: #e6c184;
-  --color-gold-soft: #3a2f1c;
+  --color-accent: #4bc2a8;
+  --color-accent-strong: #73d8c0;
+  --color-accent-soft: #183f3c;
+  --color-gold: #e8b95f;
+  --color-gold-strong: #f1cf8b;
+  --color-gold-soft: #3d3320;
   --color-danger: #f0857a;
   --color-danger-hover: #f5a097;
   --color-on-danger: #2a0b08;
   --color-danger-soft: #3d1f1c;
   --color-danger-soft-hover: #4d2723;
-  --color-info: #8db8dc;
-  --color-info-soft: #1c2c3a;
+  --color-info: #84b7ef;
+  --color-info-soft: #20364f;
   --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3);
   --shadow-raised: 0 10px 30px rgb(0 0 0 / 0.45), 0 2px 6px rgb(0 0 0 / 0.3);
 
-  --chart-in: #1ea57e;
-  --chart-out: #d4702a;
-  --chart-net: #e7ece9;
-  --chart-cat-1: #3987e5;
-  --chart-cat-2: #d95926;
-  --chart-cat-3: #199e70;
-  --chart-cat-4: #c98500;
-  --chart-cat-5: #d55181;
-  --chart-cat-6: #008300;
-  --chart-cat-7: #9085e9;
-  --chart-other: #6b7a73;
-  --chart-grid: #26332d;
-  --chart-axis: #3b4b44;
-  --chart-reference: #6b7a73;
+  --chart-in: #4bc2a8;
+  --chart-out: #ec987b;
+  --chart-net: #84b7ef;
+  --chart-cat-1: #84b7ef;
+  --chart-cat-2: #ec987b;
+  --chart-cat-3: #4bc2a8;
+  --chart-cat-4: #e8b95f;
+  --chart-cat-5: #b995eb;
+  --chart-cat-6: #65b8bd;
+  --chart-cat-7: #e38bad;
+  --chart-other: #778c96;
+  --chart-grid: #203642;
+  --chart-axis: #3a5563;
+  --chart-reference: #718791;
 }
 
 /* Smooth colour change when the theme is switched (never on first paint). */
@@ -160,7 +160,10 @@
 html { background: var(--color-canvas); -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
-  background: var(--color-canvas);
+  background:
+    radial-gradient(circle at 92% 0%, color-mix(in srgb, var(--color-accent) 9%, transparent) 0, transparent 28rem),
+    radial-gradient(circle at 4% 30%, color-mix(in srgb, var(--color-info) 6%, transparent) 0, transparent 24rem),
+    var(--color-canvas);
   color: var(--color-ink);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;

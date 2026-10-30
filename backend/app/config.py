@@ -22,8 +22,9 @@ class Settings(BaseSettings):
     # Supabase user id allowed to use the fictional Maya data set until PEN-002 persistence.
     demo_owner_user_id: str | None = None
     openai_api_key: str | None = None
-    openai_model: str = "gpt-4o-mini"
-    council_timeout_seconds: float = 6.0
+    openai_model: str = "gpt-6.1-sol"
+    # Upper bound for one coach reply, including every tool round and any revision.
+    coach_timeout_seconds: float = 45.0
 
     @model_validator(mode="after")
     def _reject_demo_token_outside_development(self) -> Self:

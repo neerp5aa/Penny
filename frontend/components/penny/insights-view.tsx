@@ -52,6 +52,21 @@ export function InsightsView({ dashboard, density, historyVersion, onOpenMonth }
         <div className="grid animate-pulse gap-4 sm:grid-cols-2 xl:grid-cols-4">{Array.from({ length: 4 }).map((_, index) => <div key={index} className="h-28 rounded-[var(--radius-card)] bg-sage-soft" />)}</div>
       ) : (
         <div className={cn("transition-opacity duration-200", compact ? "space-y-4" : "space-y-6", history.loading && "opacity-60")} aria-busy={history.loading}>
+          <section className="grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
+            <Card className="p-5 sm:p-6">
+              <CardTitle>Needs vs. wants</CardTitle>
+              <CardDescription className="mt-1">A transparent category classification for this month.</CardDescription>
+              <div className="mt-5 flex items-center gap-5">
+                <div role="img" aria-label={`Needs ${dashboard.spending_classification.needs_basis_points / 100} percent, wants ${dashboard.spending_classification.wants_basis_points / 100} percent`} className="size-28 shrink-0 rounded-full shadow-inner" style={{ background: `radial-gradient(circle, var(--color-surface) 0 49%, transparent 51%), conic-gradient(var(--color-accent) 0 ${dashboard.spending_classification.needs_basis_points / 100}%, var(--chart-out) 0)` }} />
+                <dl className="min-w-0 flex-1 space-y-3"><div><dt className="text-xs text-ink-subtle">Needs</dt><dd className="text-lg font-semibold text-ink">{cad(dashboard.spending_classification.needs_cents)} <span className="text-sm font-normal text-ink-subtle">· {Math.floor(dashboard.spending_classification.needs_basis_points / 100)}%</span></dd></div><div><dt className="text-xs text-ink-subtle">Wants</dt><dd className="text-lg font-semibold text-ink">{cad(dashboard.spending_classification.wants_cents)} <span className="text-sm font-normal text-ink-subtle">· {Math.floor(dashboard.spending_classification.wants_basis_points / 100)}%</span></dd></div></dl>
+              </div>
+              <p className="mt-4 text-xs leading-relaxed text-ink-subtle">Needs: housing, food, transport, phone, school, and health. Wants: other recorded spending. You can inspect the transactions below.</p>
+            </Card>
+            <Card className="p-5 sm:p-6">
+              <CardTitle>Data-backed observations</CardTitle><CardDescription className="mt-1">No age-group or peer comparisons are shown because Penny has no reliable benchmark dataset.</CardDescription>
+              <ul className="mt-4 divide-y divide-line">{dashboard.insights.map((insight) => <li key={insight.id} className="py-3 first:pt-0"><p className="text-sm font-semibold text-ink">{insight.headline}</p><p className="mt-1 text-sm text-ink-subtle">{insight.explanation}</p><p className="mt-1 text-xs text-ink-subtle">Source: {insight.source}</p></li>)}</ul>
+            </Card>
+          </section>
           <section aria-label={`Totals for ${range.label}`} className={cn("grid grid-cols-2 gap-3 sm:gap-4", simple ? "lg:grid-cols-3" : "xl:grid-cols-4")}>
             <Kpi index={0} icon={ArrowDownLeft} label="Money in" value={cad(data.totals.income_cents)} compact={compact} />
             <Kpi index={1} icon={ArrowUpRight} label="Money out" value={cad(data.totals.spending_cents)} compact={compact} />
@@ -124,9 +139,10 @@ export function InsightsView({ dashboard, density, historyVersion, onOpenMonth }
 }
 
 function Kpi({ index, icon: Icon, label, value, note, valueClass, compact, className }: { index: number; icon: typeof PiggyBank; label: string; value: string; note?: string; valueClass?: string; compact: boolean; className?: string }) {
+  const tones = ["bg-accent-soft text-accent-strong", "bg-[#fff0e8] text-[#b95332] dark:bg-[#4a2b25] dark:text-[#f0a184]", "bg-info-soft text-info", "bg-gold-soft text-gold-strong"];
   return (
     <Card className={cn("animate-enter", compact ? "p-4" : "p-5", className)} style={enterStyle(index)}>
-      <p className="flex items-center gap-2 text-sm font-medium text-ink-muted"><Icon className="size-4 text-ink-subtle" aria-hidden="true" />{label}</p>
+      <p className="flex items-center gap-2 text-sm font-medium text-ink-muted"><span className={cn("grid size-8 place-items-center rounded-lg", tones[index % tones.length])}><Icon className="size-4" aria-hidden="true" /></span>{label}</p>
       <p className={cn("mt-2 whitespace-nowrap text-xl font-semibold tracking-tight text-ink sm:text-2xl", valueClass)}>{value}</p>
       {note && <p className="mt-1 text-xs text-ink-subtle">{note}</p>}
     </Card>

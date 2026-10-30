@@ -4,9 +4,9 @@ import { centsToInput } from "./money";
 export type KindFilter = "all" | "income" | "spending";
 /** "all", "uncategorized", or a category id. */
 export type CategoryFilter = string;
-export type TransactionFilters = { query: string; kind: KindFilter; category: CategoryFilter };
+export type TransactionFilters = { query: string; kind: KindFilter; category: CategoryFilter; from: string; to: string };
 
-export const EMPTY_FILTERS: TransactionFilters = { query: "", kind: "all", category: "all" };
+export const EMPTY_FILTERS: TransactionFilters = { query: "", kind: "all", category: "all", from: "", to: "" };
 
 /** Client-side filtering over the already-loaded dashboard; it never changes amounts. */
 export function filterTransactions(transactions: readonly Transaction[], filters: TransactionFilters): Transaction[] {
@@ -15,12 +15,14 @@ export function filterTransactions(transactions: readonly Transaction[], filters
     if (filters.kind !== "all" && item.kind !== filters.kind) return false;
     if (filters.category === "uncategorized" && item.category_id !== null) return false;
     if (filters.category !== "all" && filters.category !== "uncategorized" && item.category_id !== filters.category) return false;
+    if (filters.from && item.occurred_on < filters.from) return false;
+    if (filters.to && item.occurred_on > filters.to) return false;
     return !query || item.description.toLocaleLowerCase("en-CA").includes(query);
   });
 }
 
 export function hasActiveFilters(filters: TransactionFilters): boolean {
-  return filters.query.trim() !== "" || filters.kind !== "all" || filters.category !== "all";
+  return filters.query.trim() !== "" || filters.kind !== "all" || filters.category !== "all" || filters.from !== "" || filters.to !== "";
 }
 
 export type TransactionSort = "newest" | "oldest" | "largest" | "smallest";

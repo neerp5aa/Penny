@@ -8,6 +8,10 @@ export type SavingsGoal = { id: string; name: string; target_cents: number; curr
 export type Mission = { id: string; title: string; description: string; xp_reward: number; completed: boolean };
 export type CategorySpending = { category_id: string | null; category_name: string; colour_token: string; spent_cents: number; share_basis_points: number };
 export type DailySpending = { day: string; spent_cents: number; cumulative_cents: number };
+export type FinancialHealthFactor = { id: string; label: string; score: number; max_score: number; explanation: string };
+export type FinancialHealth = { score: number; weekly_change: number | null; factors: FinancialHealthFactor[]; methodology: string; limitations: string[] };
+export type FinancialInsight = { id: string; headline: string; explanation: string; action_label: string | null; destination: "budget" | "transactions" | "goals" | "ai" | "credit"; source: string };
+export type UpcomingBill = { id: string; name: string; amount_cents: number; due_on: string; status: "scheduled" | "paid"; payment_source: "user_marked" | "not_verified" };
 export type Dashboard = {
   active_month: string;
   current_month: string;
@@ -23,7 +27,16 @@ export type Dashboard = {
   category_spending: CategorySpending[];
   daily_spending: DailySpending[];
   credit: { account_id: string; account_name: string; balance_cents: number; credit_limit_cents: number; utilization_basis_points: number };
-  totals: { available_balance_cents: number; income_cents: number; spending_cents: number; cash_flow_cents: number; total_budget_cents: number; budget_remaining_cents: number; savings_contributions_cents: number };
+  investment_data: { available: false; title: string; explanation: string };
+  credit_score_data: { available: false; title: string; explanation: string };
+  financial_health: FinancialHealth;
+  insights: FinancialInsight[];
+  spending_classification: { needs_cents: number; wants_cents: number; needs_basis_points: number; wants_basis_points: number };
+  upcoming_bills: UpcomingBill[];
+  net_worth: { cash_cents: number; savings_cents: number; investments_cents: number | null; liabilities_cents: number; net_worth_cents: number };
+  previous_month_cash_flow_cents: number | null;
+  spending_power_cents: number;
+  totals: { available_balance_cents: number; income_cents: number; spending_cents: number; cash_flow_cents: number; total_budget_cents: number; budget_remaining_cents: number; savings_contributions_cents: number; savings_rate_basis_points: number };
 };
 
 export type HistoryMonth = { month: string; income_cents: number; spending_cents: number; cash_flow_cents: number; budget_cents: number; transaction_count: number };
@@ -39,26 +52,22 @@ export type CreditUtilization = { balance_cents: number; credit_limit_cents: num
 
 export type TransactionWrite = Omit<Transaction, "id" | "category">;
 export type GoalWrite = Pick<SavingsGoal, "name" | "target_cents" | "current_cents" | "target_date">;
-export type CouncilClaim = { id: string; label: string; value_cents: number; source_tool: string };
-export type CouncilViewpoint = { agent: "Savvy" | "Max" | "Joy"; role: string; stance: "cautious" | "conditional" | "supportive"; headline: string; reasoning: string; assumptions: string[]; tradeoffs: string[]; claim_ids: string[] };
-export type CouncilScenario = { name: string; description: string; cash_flow_after_cents: number; budget_remaining_after_cents: number; months: number | null };
-export type CouncilResponse = {
-  status: "complete" | "needs_information";
-  decision: "buy_now" | "save_then_buy" | "wait" | "needs_information";
-  summary: string;
-  selected_agents: ("Savvy" | "Max" | "Joy")[];
-  missing_information: string[];
-  assumptions: string[];
-  viewpoints: CouncilViewpoint[];
-  disagreements: string[];
-  quantitative_claims: CouncilClaim[];
-  scenarios: CouncilScenario[];
-  recommended_actions: { title: string; rationale: string; priority: "now" | "next" | "optional" }[];
-  verification: { verified: boolean; checks: string[]; issues: string[] };
-  goal_change_proposal: { proposal_id: string; proposal_version: string; goal_id: string; goal_name: string; current_cents: number; contribution_cents: number; proposed_current_cents: number; requires_approval: true } | null;
-  llm_status: "used" | "fallback_no_key" | "fallback_failure" | "not_needed";
-  limits: { debate_rounds_used: number; debate_rounds_max: number; tool_calls_used: number; tool_calls_max: number; output_tokens_used: number; output_tokens_max: number; execution_ms: number; execution_ms_max: number };
+export type CoachRole = "user" | "assistant";
+export type CoachFact = { label: string; display: string; cents: number | null; basis_points: number | null; source: string };
+export type CoachProposal = { id: string; version: string; kind: "goal_contribution" | "budget_limit"; title: string; reason: string; target_id: string; target_name: string; current_cents: number; proposed_cents: number };
+export type CoachReply = {
+  reply: string;
+  follow_ups: string[];
+  facts: CoachFact[];
+  tools_used: { name: string; label: string }[];
+  proposal: CoachProposal | null;
+  source: "ai" | "built_in";
+  fallback_reason: "no_api_key" | "model_error" | "timeout" | "unverified_numbers" | null;
+  model: string | null;
+  usage: { input_tokens: number; output_tokens: number; elapsed_ms: number };
 };
+export type CoachSignal = { id: string; tone: "positive" | "watch" | "alert"; title: string; detail: string; prompt: string };
+export type CoachBrief = { greeting: string; month_label: string; signals: CoachSignal[]; suggested_questions: string[] };
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
@@ -73,7 +82,7 @@ export class ApiError extends Error {
   }
 }
 
-export type TokenSources = {
+type TokenSources = {
   sessionToken: () => Promise<string | null>;
   demoMode: boolean;
   demoToken: string | undefined;
@@ -83,7 +92,7 @@ export type TokenSources = {
  * Picks the bearer token for API calls: the Supabase session first, then the fictional demo
  * token only when demo mode is explicitly enabled. Never invents a token.
  */
-export async function resolveAccessToken(sources: TokenSources): Promise<string> {
+async function resolveAccessToken(sources: TokenSources): Promise<string> {
   const sessionToken = await sources.sessionToken();
   if (sessionToken) return sessionToken;
   if (sources.demoMode && sources.demoToken) return sources.demoToken;
@@ -114,7 +123,6 @@ async function authorizedRequest<T>(path: string, init?: RequestInit): Promise<T
 }
 
 const request = (path: string, init?: RequestInit) => authorizedRequest<Dashboard>(path, init);
-const councilRequest = authorizedRequest;
 
 /** Appends the month whose snapshot the API should return (YYYY-MM-01). */
 const inMonth = (path: string, month?: string) => (month ? `${path}${path.includes("?") ? "&" : "?"}month=${encodeURIComponent(month)}` : path);
@@ -133,6 +141,7 @@ export const dashboardApi = {
   deleteGoal: (id: string, month?: string) => request(inMonth(`/api/v1/savings-goals/${id}`, month), { method: "DELETE" }),
   contributeToGoal: (id: string, amount_cents: number, month?: string) => request(inMonth(`/api/v1/savings-goals/${id}/contributions`, month), { method: "POST", body: JSON.stringify({ amount_cents }) }),
   completeMission: (id: string, month?: string) => request(inMonth(`/api/v1/missions/${id}/complete`, month), { method: "POST" }),
+  markBillPaid: (id: string, month?: string) => request(inMonth(`/api/v1/upcoming-bills/${id}/mark-paid`, month), { method: "POST" }),
 };
 
 export const historyApi = {
@@ -143,7 +152,8 @@ export const calculationsApi = {
   creditUtilization: (balance_cents: number, credit_limit_cents: number) => authorizedRequest<CreditUtilization>("/api/v1/calculations/credit-utilization", { method: "POST", body: JSON.stringify({ balance_cents, credit_limit_cents }) }),
 };
 
-export const councilApi = {
-  analyze: (body: { question: string; purchase_name?: string; purchase_cents?: number; time_horizon_months?: number; savings_goal_id?: string }) => councilRequest<CouncilResponse>("/api/v1/council/analyze", { method: "POST", body: JSON.stringify(body) }),
-  approveGoalChange: (proposalId: string, proposalVersion: string) => councilRequest<{ status: "applied"; message: string; dashboard: Dashboard }>(`/api/v1/council/proposals/${proposalId}/approve`, { method: "POST", body: JSON.stringify({ approved: true, proposal_version: proposalVersion }) }),
+export const coachApi = {
+  brief: () => authorizedRequest<CoachBrief>("/api/v1/coach/brief"),
+  chat: (messages: { role: CoachRole; content: string }[]) => authorizedRequest<CoachReply>("/api/v1/coach/chat", { method: "POST", body: JSON.stringify({ messages }) }),
+  approve: (proposal: CoachProposal) => authorizedRequest<{ message: string; dashboard: Dashboard }>(`/api/v1/coach/proposals/${proposal.id}/approve`, { method: "POST", body: JSON.stringify({ approved: true, version: proposal.version }) }),
 };

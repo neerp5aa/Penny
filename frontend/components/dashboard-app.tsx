@@ -3,12 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import Link from "next/link";
-import { CloudOff, LogIn, RefreshCw } from "lucide-react";
-import { DisplaySettingsDialog, MobileAccount, MobileNavigation, PageHeader, Sidebar } from "@/components/penny/app-shell";
+import { Bot, CloudOff, LogIn, RefreshCw } from "lucide-react";
+import { DisplaySettingsDialog, MobileAccount, MobileNavigation, PageHeader, SettingsView, Sidebar } from "@/components/penny/app-shell";
 import { BudgetView } from "@/components/penny/budget-view";
-import { CouncilView } from "@/components/penny/council-view";
+import { CoachView, useCoachChat } from "@/components/penny/coach-view";
 import { AddMoneyDialog, BudgetDialog, ConfirmDialog, type ConfirmRequest, GoalDialog, TransactionDialog } from "@/components/penny/dialogs";
-import { HomeView } from "@/components/penny/home-view";
+import { GoalsView, HomeView } from "@/components/penny/home-view";
 import { InsightsView } from "@/components/penny/insights-view";
 import { CreditView, LearnView } from "@/components/penny/learn-credit-views";
 import { usePreferences } from "@/components/penny/preferences";
@@ -17,6 +17,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { ToastProvider, useToast } from "@/components/ui/toast";
 import { type Budget, type Dashboard, dashboardApi, type Mission, type SavingsGoal, type Transaction } from "@/lib/api";
 import { addMonths, formatMonth } from "@/lib/format";
+import { cn } from "@/lib/utils";
 
 export function DashboardApp() {
   return <ToastProvider><PennyApp /></ToastProvider>;
@@ -71,9 +72,11 @@ function deleteConfirmation(mutate: Mutate, options: { title: string; descriptio
 
 function PennyApp() {
   const toast = useToast();
+  const coachChat = useCoachChat();
   const { density, resolvedTheme, setTheme } = usePreferences();
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
-  const [view, setView] = useState<View>("home");
+  const [view, setView] = useState<View>("overview");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [monthLoading, setMonthLoading] = useState(false);
   const [historyVersion, setHistoryVersion] = useState(0);
@@ -152,7 +155,7 @@ function PennyApp() {
   }, [dashboard, monthLoading, prefetch, remember, toast]);
 
   const openMonth = useCallback((month: string) => {
-    if (view !== "home") navigate("home");
+    if (view !== "overview") navigate("overview");
     goToMonth(month);
   }, [goToMonth, navigate, view]);
 
@@ -241,6 +244,10 @@ function PennyApp() {
     void mutate(() => dashboardApi.completeMission(mission.id, month), `Mission complete · +${mission.xp_reward} XP`)
       .then((error) => { if (error) toast({ title: "Couldn’t complete the mission", description: error, tone: "error" }); });
   };
+  const markBillPaid = (bill: Dashboard["upcoming_bills"][number]) => {
+    void mutate(() => dashboardApi.markBillPaid(bill.id, month), "Bill marked paid")
+      .then((error) => { if (error) toast({ title: "Couldn’t update the bill", description: error, tone: "error" }); });
+  };
 
   const homeActions = {
     onNavigate: navigate,
@@ -253,27 +260,31 @@ function PennyApp() {
     onAddToGoal: setAddMoneyTarget,
     onEditBudget: setBudgetTarget,
     onCompleteMission: completeMission,
+    onMarkBillPaid: markBillPaid,
   };
 
   return (
     <div className="min-h-dvh">
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[70] focus:rounded-xl focus:bg-surface focus:px-4 focus:py-3 focus:font-semibold focus:shadow-[var(--shadow-raised)]">Skip to content</a>
-      <Sidebar active={view} dashboard={dashboard} onNavigate={navigate} onOpenDisplay={() => setDisplayOpen(true)} />
-      <div className="lg:pl-64">
+      <Sidebar active={view} dashboard={dashboard} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((value) => !value)} onNavigate={navigate} onOpenDisplay={() => setDisplayOpen(true)} />
+      <div className={cn("transition-[padding] duration-200", sidebarCollapsed ? "lg:pl-20" : "lg:pl-64")}>
         <PageHeader view={view} dashboard={dashboard} monthLoading={monthLoading} onChangeMonth={goToMonth} onAddTransaction={() => setTransactionTarget("new")} onOpenDisplay={() => setDisplayOpen(true)} />
         <main id="main" tabIndex={-1} className="mx-auto max-w-7xl px-4 pb-[calc(6.5rem+env(safe-area-inset-bottom))] pt-5 focus:outline-none sm:px-6 lg:px-10 lg:pb-12 lg:pt-8 compact:lg:pt-6">
           <div key={`${view}-${density}`} className={monthLoading ? "animate-fade opacity-70 transition-opacity duration-200" : "animate-fade transition-opacity duration-200"} aria-busy={monthLoading}>
-            {view === "home" && <HomeView dashboard={dashboard} density={density} historyVersion={historyVersion} actions={homeActions} />}
-            {view === "budget" && <BudgetView dashboard={dashboard} density={density} onAddTransaction={() => setTransactionTarget("new")} onEditTransaction={setTransactionTarget} onDeleteTransaction={confirmDeleteTransaction} onAddBudget={() => setBudgetTarget("new")} onEditBudget={setBudgetTarget} onCopyBudgets={copyBudgets} />}
+            {view === "overview" && <HomeView dashboard={dashboard} density={density} historyVersion={historyVersion} actions={homeActions} />}
+            {view === "transactions" && <BudgetView dashboard={dashboard} density={density} onAddTransaction={() => setTransactionTarget("new")} onEditTransaction={setTransactionTarget} onDeleteTransaction={confirmDeleteTransaction} onAddBudget={() => setBudgetTarget("new")} onEditBudget={setBudgetTarget} onCopyBudgets={copyBudgets} />}
             {view === "insights" && <InsightsView dashboard={dashboard} density={density} historyVersion={historyVersion} onOpenMonth={openMonth} />}
-            {view === "council" && <CouncilView dashboard={dashboard} onDashboardChange={applyChange} onApproved={(message) => toast({ title: message })} />}
-            {view === "learn" && <LearnView />}
+            {view === "goals" && <GoalsView dashboard={dashboard} onAdd={() => setGoalTarget("new")} onEdit={setGoalTarget} onAddMoney={setAddMoneyTarget} onComplete={(goal) => void mutate(() => dashboardApi.updateGoal(goal.id, { current_cents: goal.target_cents, status: "completed" }, month), `${goal.name} marked complete`)} />}
+            {view === "ai" && <CoachView chat={coachChat} dashboard={dashboard} onDashboardChange={applyChange} onApproved={(message) => toast({ title: "Change applied", description: message })} />}
+            {view === "learning" && <LearnView />}
             {view === "credit" && <CreditView dashboard={dashboard} />}
+            {view === "settings" && <SettingsView />}
           </div>
           <div className="mt-8"><MobileAccount dashboard={dashboard} onOpenDisplay={() => setDisplayOpen(true)} /></div>
         </main>
       </div>
       <MobileNavigation active={view} onNavigate={navigate} />
+      {view !== "ai" && <button type="button" onClick={() => navigate("ai")} className="fixed bottom-[calc(5.25rem+env(safe-area-inset-bottom))] right-4 z-20 inline-flex min-h-11 items-center gap-2 rounded-full bg-primary px-4 text-sm font-semibold text-on-primary shadow-[var(--shadow-raised)] transition-transform hover:-translate-y-0.5 motion-reduce:transform-none lg:bottom-6 lg:right-6"><Bot className="size-4" />Ask Penny</button>}
 
       <EditDialogs
         dashboard={dashboard}

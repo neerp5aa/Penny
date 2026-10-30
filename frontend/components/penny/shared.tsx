@@ -1,21 +1,23 @@
 "use client";
 
 import { useId } from "react";
-import { ChartColumn, CreditCard, GraduationCap, Home, ReceiptText, Sparkles, type LucideIcon } from "lucide-react";
+import { Bot, ChartColumn, CreditCard, GraduationCap, Home, ReceiptText, Settings, Target, type LucideIcon } from "lucide-react";
 import { Label } from "@/components/ui/input";
 import { ApiError } from "@/lib/api";
 import { formatCad } from "@/lib/money";
 import { cn } from "@/lib/utils";
 
-export type View = "home" | "budget" | "insights" | "council" | "learn" | "credit";
+export type View = "overview" | "transactions" | "insights" | "goals" | "ai" | "learning" | "credit" | "settings";
 
 export const NAVIGATION: { id: View; label: string; title: string; description: string; icon: LucideIcon }[] = [
-  { id: "home", label: "Home", title: "Overview", description: "Your money at a glance.", icon: Home },
-  { id: "budget", label: "Budget", title: "Budget & spending", description: "See where your money goes and stay on plan.", icon: ReceiptText },
-  { id: "insights", label: "Insights", title: "Insights & history", description: "Look back over past months and years.", icon: ChartColumn },
-  { id: "council", label: "Council", title: "Penny Council", description: "Ask before you spend. Three perspectives, verified numbers.", icon: Sparkles },
-  { id: "learn", label: "Learn", title: "Learn", description: "Short lessons to build money confidence.", icon: GraduationCap },
-  { id: "credit", label: "Credit", title: "Credit basics", description: "How credit utilization works, in plain language.", icon: CreditCard },
+  { id: "overview", label: "Overview", title: "Overview", description: "Your financial position today.", icon: Home },
+  { id: "transactions", label: "Transactions", title: "Transactions", description: "Search, inspect, and manage money in and out.", icon: ReceiptText },
+  { id: "insights", label: "Insights", title: "Insights", description: "Trends and explanations grounded in your data.", icon: ChartColumn },
+  { id: "goals", label: "Goals", title: "Financial goals", description: "Track progress and make intentional contributions.", icon: Target },
+  { id: "ai", label: "Penny AI", title: "Penny AI", description: "Your money coach. It knows your numbers and helps you decide.", icon: Bot },
+  { id: "learning", label: "Learning", title: "Learning", description: "Build practical financial knowledge a little at a time.", icon: GraduationCap },
+  { id: "credit", label: "Credit Coach", title: "Credit Coach · Beta", description: "Educational Canadian credit guidance.", icon: CreditCard },
+  { id: "settings", label: "Settings", title: "Settings", description: "Display and notification preferences.", icon: Settings },
 ];
 
 /** Formats integer cents from the API. Display only; never feed the result back into maths. */

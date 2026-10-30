@@ -1,53 +1,61 @@
+"""Owner-bound, version-bound, single-use records of changes Penny has suggested."""
+
 import hashlib
 import secrets
 from dataclasses import dataclass
 from threading import RLock
+from typing import Literal
 
 from fastapi import HTTPException, status
 
+ProposalKind = Literal["goal_contribution", "budget_limit"]
+
 
 @dataclass(slots=True)
-class StoredGoalProposal:
+class StoredProposal:
     id: str
     version: str
     owner_user_id: str
-    goal_id: str
+    kind: ProposalKind
+    target_id: str
+    # The value the target had when proposed; approval fails if it has changed since.
     expected_current_cents: int
-    contribution_cents: int
+    proposed_cents: int
     applied: bool = False
 
 
-class GoalProposalStore:
+class ProposalStore:
     def __init__(self) -> None:
-        self._proposals: dict[str, StoredGoalProposal] = {}
+        self._proposals: dict[str, StoredProposal] = {}
         self._lock = RLock()
 
     def create(
         self,
         owner_user_id: str,
-        goal_id: str,
+        kind: ProposalKind,
+        target_id: str,
         expected_current_cents: int,
-        contribution_cents: int,
-    ) -> StoredGoalProposal:
+        proposed_cents: int,
+    ) -> StoredProposal:
         proposal_id = f"proposal-{secrets.token_urlsafe(12)}"
         version = hashlib.sha256(
-            f"{proposal_id}:{owner_user_id}:{goal_id}:{expected_current_cents}:{contribution_cents}".encode()
+            f"{proposal_id}:{owner_user_id}:{kind}:{target_id}:"
+            f"{expected_current_cents}:{proposed_cents}".encode()
         ).hexdigest()[:24]
-        proposal = StoredGoalProposal(
+        proposal = StoredProposal(
             id=proposal_id,
             version=version,
             owner_user_id=owner_user_id,
-            goal_id=goal_id,
+            kind=kind,
+            target_id=target_id,
             expected_current_cents=expected_current_cents,
-            contribution_cents=contribution_cents,
+            proposed_cents=proposed_cents,
         )
         with self._lock:
             self._proposals[proposal_id] = proposal
         return proposal
 
-    def consume_for_approval(
-        self, proposal_id: str, user_id: str, version: str
-    ) -> StoredGoalProposal:
+    def consume_for_approval(self, proposal_id: str, user_id: str, version: str) -> StoredProposal:
         with self._lock:
             proposal = self._proposals.get(proposal_id)
             if not proposal:
@@ -64,4 +72,4 @@ class GoalProposalStore:
             return proposal
 
 
-goal_proposal_store = GoalProposalStore()
+proposal_store = ProposalStore()
