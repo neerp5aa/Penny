@@ -10,15 +10,10 @@ import re
 from dataclasses import dataclass, field
 
 from app.coach.models import Fact
+from app.domain.finance import format_cad
 
 _MONEY = re.compile(r"\$\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?(?!\d)")
 _PERCENT = re.compile(r"(\d+(?:\.\d+)?)\s?%")
-
-
-def format_cad(cents: int) -> str:
-    sign = "-" if cents < 0 else ""
-    dollars, remainder = divmod(abs(cents), 100)
-    return f"{sign}${dollars:,}.{remainder:02d}"
 
 
 def format_percent(basis_points: int) -> str:

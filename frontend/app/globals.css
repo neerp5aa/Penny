@@ -1,9 +1,7 @@
 @import "tailwindcss";
 
-/* data-theme and data-density are set on <html> before first paint (see app/layout.tsx). */
+/* data-theme is set on <html> before first paint (see app/layout.tsx). */
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
-@custom-variant compact (&:where([data-density="compact"], [data-density="compact"] *));
-@custom-variant simple (&:where([data-density="simple"], [data-density="simple"] *));
 
 /*
  * Penny design tokens. Utilities are generated from these names, e.g. bg-primary,
@@ -14,6 +12,14 @@
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 
   --color-canvas: #f6f8fb;
+
+  /* Daily Money Score zones (WHOOP-style). Fills and rings only; pair with ink text. */
+  --color-zone-green: #16a36a;
+  --color-zone-green-soft: #dcf5e8;
+  --color-zone-yellow: #e7a91c;
+  --color-zone-yellow-soft: #fdf1d3;
+  --color-zone-red: #dc4b43;
+  --color-zone-red-soft: #fde4e2;
   --color-surface: #ffffff;
   --color-sage: #e5f1ed;
   --color-sage-soft: #f0f7f5;
@@ -109,6 +115,12 @@
   --color-danger-soft-hover: #4d2723;
   --color-info: #84b7ef;
   --color-info-soft: #20364f;
+  --color-zone-green: #3ccf8e;
+  --color-zone-green-soft: #173d2e;
+  --color-zone-yellow: #f2c14e;
+  --color-zone-yellow-soft: #3d3420;
+  --color-zone-red: #f27a72;
+  --color-zone-red-soft: #43211f;
   --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3);
   --shadow-raised: 0 10px 30px rgb(0 0 0 / 0.45), 0 2px 6px rgb(0 0 0 / 0.3);
 

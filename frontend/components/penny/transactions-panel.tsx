@@ -9,6 +9,7 @@ import type { Dashboard, Transaction } from "@/lib/api";
 import { formatShortDate } from "@/lib/format";
 import { EMPTY_FILTERS, filterTransactions, hasActiveFilters, type KindFilter, sortTransactions, type TransactionFilters, type TransactionSort, transactionsToCsv } from "@/lib/transactions";
 import { cn } from "@/lib/utils";
+import { categoryOptions } from "./dialogs";
 import { cad, EmptyState } from "./shared";
 
 type Props = {
@@ -27,6 +28,8 @@ const KIND_OPTIONS: { value: KindFilter; label: string }[] = [
   { value: "all", label: "All" },
   { value: "income", label: "Money in" },
   { value: "spending", label: "Money out" },
+  { value: "need", label: "Needs" },
+  { value: "want", label: "Wants" },
 ];
 
 export function TransactionsPanel({ dashboard, title, description, limit, onViewAll, onAdd, onEdit, onDelete }: Props) {
@@ -39,7 +42,10 @@ export function TransactionsPanel({ dashboard, title, description, limit, onView
   const categoryId = useId();
   const recentMode = limit !== undefined;
   const accounts = useMemo(() => new Map(dashboard.accounts.map((account) => [account.id, account.name])), [dashboard.accounts]);
-  const filtered = useMemo(() => sortTransactions(filterTransactions(dashboard.transactions, filters), sort), [dashboard.transactions, filters, sort]);
+  const filtered = useMemo(() => {
+    const parents = new Map(dashboard.categories.map((category) => [category.id, category.parent_id]));
+    return sortTransactions(filterTransactions(dashboard.transactions, filters, (id) => parents.get(id) ?? null), sort);
+  }, [dashboard.transactions, dashboard.categories, filters, sort]);
   const rows = recentMode ? dashboard.transactions.slice(0, limit) : filtered;
   const total = dashboard.transactions.length;
   const filtering = hasActiveFilters(filters);
@@ -71,15 +77,15 @@ export function TransactionsPanel({ dashboard, title, description, limit, onView
       </div>
 
       {!recentMode && total > 0 && (
-        <div className="grid gap-2 border-b border-line px-5 pb-4 sm:grid-cols-2 sm:px-6 xl:grid-cols-6" role="search" aria-label="Filter transactions">
+        <div className="grid gap-2 border-b border-line px-5 pb-4 sm:grid-cols-2 sm:px-6 xl:grid-cols-7" role="search" aria-label="Filter transactions">
           <div className="relative sm:col-span-2 xl:col-span-1">
             <label htmlFor={searchId} className="sr-only">Search by description</label>
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-ink-subtle" aria-hidden="true" />
             <Input id={searchId} type="search" placeholder="Search transactions" value={filters.query} onChange={(event) => setFilters({ ...filters, query: event.target.value })} className="pl-9" />
           </div>
-          <div role="radiogroup" aria-label="Transaction type" className="grid grid-cols-3 gap-1 rounded-xl bg-sage-soft p-1 xl:col-span-2">
+          <div role="radiogroup" aria-label="Transaction type" className="grid grid-cols-5 gap-1 rounded-xl bg-sage-soft p-1 sm:col-span-2 xl:col-span-3">
             {KIND_OPTIONS.map((option) => (
-              <button key={option.value} type="button" role="radio" aria-checked={filters.kind === option.value} onClick={() => setFilters({ ...filters, kind: option.value })} className={cn("min-h-9 whitespace-nowrap rounded-lg px-3 text-sm font-semibold transition-colors", filters.kind === option.value ? "bg-surface text-ink shadow-sm" : "text-ink-muted hover:text-ink")}>
+              <button key={option.value} type="button" role="radio" aria-checked={filters.kind === option.value} onClick={() => setFilters({ ...filters, kind: option.value })} className={cn("min-h-10 whitespace-nowrap rounded-lg px-1 text-xs font-semibold sm:px-3 sm:text-sm transition-colors", filters.kind === option.value ? "bg-surface text-ink shadow-sm" : "text-ink-muted hover:text-ink")}>
                 {option.label}
               </button>
             ))}
@@ -88,7 +94,8 @@ export function TransactionsPanel({ dashboard, title, description, limit, onView
             <label htmlFor={categoryId} className="sr-only">Category</label>
             <Select id={categoryId} value={filters.category} onChange={(event) => setFilters({ ...filters, category: event.target.value })}>
               <option value="all">All categories</option>
-              {dashboard.categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+              <optgroup label="Money out">{categoryOptions(dashboard.categories, "spending").map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</optgroup>
+              <optgroup label="Money in">{categoryOptions(dashboard.categories, "income").map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</optgroup>
               <option value="uncategorized">Uncategorized</option>
             </Select>
           </div>
@@ -136,8 +143,8 @@ export function TransactionsPanel({ dashboard, title, description, limit, onView
                 const income = item.kind === "income";
                 return (
                   <tr key={item.id} className="group transition-colors hover:bg-sage-soft/60">
-                    <td className="border-b border-line/70 p-0 group-last:border-b-0 md:py-3 md:pl-6 md:pr-3 compact:md:py-1.5">
-                      <button type="button" onClick={() => setExpanded(expanded === item.id ? null : item.id)} className="flex w-full min-w-0 items-center gap-3 px-5 py-3 text-left compact:py-2 md:hidden" aria-expanded={expanded === item.id} aria-label={`${item.description}, ${income ? "money in" : "money out"} ${cad(item.amount_cents)}, ${item.category}, ${formatShortDate(item.occurred_on)}. Show details`}>
+                    <td className="border-b border-line/70 p-0 group-last:border-b-0 md:py-3 md:pl-6 md:pr-3">
+                      <button type="button" onClick={() => setExpanded(expanded === item.id ? null : item.id)} className="flex w-full min-w-0 items-center gap-3 px-5 py-3 text-left md:hidden" aria-expanded={expanded === item.id} aria-label={`${item.description}, ${income ? "money in" : "money out"} ${cad(item.amount_cents)}, ${item.category}, ${formatShortDate(item.occurred_on)}. Show details`}>
                         <TransactionIdentity item={item} />
                         <span className={cn("tabular whitespace-nowrap shrink-0 font-semibold", income ? "text-accent-strong" : "text-ink")}>{income ? cad(item.amount_cents, true) : cad(-item.amount_cents)}</span>
                         <ChevronRight className="size-4 shrink-0 text-ink-subtle" aria-hidden="true" />
@@ -175,7 +182,11 @@ function TransactionIdentity({ item }: { item: Transaction }) {
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate font-semibold text-ink">{item.description}</span>
-        <span className="block truncate text-xs text-ink-subtle">{item.category} · {formatShortDate(item.occurred_on)}</span>
+        <span className="flex min-w-0 items-center gap-1.5 text-xs text-ink-subtle">
+          <span className="truncate">{item.category} · {formatShortDate(item.occurred_on)}</span>
+          {item.necessity && <span className={cn("shrink-0 rounded-full px-1.5 py-px text-[11px] font-semibold", item.necessity === "need" ? "bg-info-soft text-info" : "bg-gold-soft text-gold-strong")}>{item.necessity === "need" ? "Need" : "Want"}</span>}
+          {item.auto_categorized && <span className="shrink-0 rounded-full bg-accent-soft px-1.5 py-px text-[11px] font-semibold text-accent-strong" title="Category picked automatically from the merchant name">Auto</span>}
+        </span>
       </span>
     </>
   );

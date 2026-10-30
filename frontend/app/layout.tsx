@@ -19,8 +19,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    // The boot script sets data-theme/data-density before hydration, so React must not
-    // treat those attributes as a mismatch.
+    // The boot script sets data-theme before hydration, so React must not treat it as a mismatch.
     <html lang="en-CA" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: PREFERENCES_BOOT_SCRIPT }} />

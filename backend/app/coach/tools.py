@@ -13,6 +13,7 @@ from app.coach.context import CoachContext
 from app.coach.facts import parse_cad
 from app.coach.models import Proposal, ToolUse
 from app.coach.proposals import proposal_store
+from app.domain.finance import add_months
 
 MAX_PLAN_MONTHS = 36
 
@@ -232,6 +233,8 @@ def simulate_spending_cut(
 def credit_card_payment(ctx: CoachContext, payment: str) -> dict[str, Any]:
     f = ctx.facts
     credit = ctx.dashboard.credit
+    if not credit:
+        raise ToolError("There is no credit card on this profile")
     payment_cents = _amount(payment, "payment")
     result = calc.credit_payment(credit.balance_cents, credit.credit_limit_cents, payment_cents)
     ctx.tools_used.append(ToolUse(name="credit_card_payment", label="Modelled a card payment"))
@@ -253,17 +256,27 @@ def credit_card_payment(ctx: CoachContext, payment: str) -> dict[str, Any]:
     }
 
 
+def category_names(ctx: CoachContext, category_id: str | None) -> set[str]:
+    """A transaction's category name plus its parent's, so "Food" finds "Groceries" too."""
+    by_id = {c.id: c for c in ctx.dashboard.categories}
+    category = by_id.get(category_id) if category_id else None
+    if not category:
+        return {"uncategorized"}
+    parent = by_id.get(category.parent_id) if category.parent_id else None
+    return {category.name.casefold(), *([parent.name.casefold()] if parent else [])}
+
+
 def list_transactions(ctx: CoachContext, category: str | None, months_back: int) -> dict[str, Any]:
     if not 0 <= months_back <= 3:
         raise ToolError("months_back must be between 0 and 3")
     rows = []
     for offset in range(months_back + 1):
-        month = calc.add_months(ctx.month, -offset)
+        month = add_months(ctx.month, -offset)
         snapshot = (
             ctx.dashboard if offset == 0 else ctx.store.dashboard_for_user(ctx.user_id, month)
         )
         for t in snapshot.transactions:
-            if category and t.category.casefold() != category.strip().casefold():
+            if category and category.strip().casefold() not in category_names(ctx, t.category_id):
                 continue
             rows.append(
                 {

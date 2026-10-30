@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronLeft, ChevronRight, LayoutGrid, LayoutList, LogOut, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Plus, Rows3, ShieldCheck, SlidersHorizontal, Square, Sun, Undo2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, LayoutList, LogOut, Menu, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Plus, ShieldCheck, SlidersHorizontal, Sun, Undo2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -10,17 +10,17 @@ import type { Dashboard } from "@/lib/api";
 import { addMonths, formatMonth, greeting } from "@/lib/format";
 import { getSupabaseUserEmail, signOutOfSupabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
-import { DENSITY_OPTIONS, type Density, THEME_OPTIONS, type ThemeSetting, usePreferences } from "./preferences";
-import { NAVIGATION, type View } from "./shared";
+import { THEME_OPTIONS, type ThemeSetting, usePreferences } from "./preferences";
+import { cad, NAVIGATION, type View } from "./shared";
+import { AskBar } from "./today-view";
 
-const MONTH_VIEWS: View[] = ["overview", "transactions"];
-const DENSITY_ICONS: Record<Density, typeof Square> = { simple: Square, compact: Rows3, detailed: LayoutGrid };
-const THEME_ICONS: Record<ThemeSetting, typeof Sun> = { light: Sun, dark: Moon, system: Monitor };
+const MONTH_VIEWS: View[] = ["today", "spending"];
+export const THEME_ICONS: Record<ThemeSetting, typeof Sun> = { light: Sun, dark: Moon, system: Monitor };
 
 export const SHORTCUTS: { keys: string; action: string }[] = [
   { keys: "N", action: "Add a transaction" },
   { keys: "[  ]", action: "Previous / next month" },
-  { keys: "1 – 8", action: "Jump between primary sections" },
+  { keys: "1 – 8", action: "Jump between sections" },
   { keys: "D", action: "Switch light / dark" },
   { keys: "?", action: "Open display settings" },
 ];
@@ -100,18 +100,43 @@ export function Sidebar({ active, dashboard, collapsed, onToggle, onNavigate, on
 }
 
 export function MobileNavigation({ active, onNavigate }: { active: View; onNavigate: (view: View) => void }) {
+  const [moreOpen, setMoreOpen] = useState(false);
+  const primary = NAVIGATION.filter((item) => item.primary);
+  const secondary = NAVIGATION.filter((item) => !item.primary);
+  const moreActive = secondary.some((item) => item.id === active);
+  const tab = (selected: boolean) => cn("flex min-h-16 w-full flex-col items-center justify-center gap-1 text-[11px] font-medium transition-colors", selected ? "text-primary" : "text-ink-subtle hover:text-ink");
+  const pill = (selected: boolean) => cn("grid h-7 w-11 place-items-center rounded-full transition-colors duration-150", selected && "bg-sage");
   return (
     <nav aria-label="Primary" className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-surface/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md lg:hidden">
-      <ul className="mx-auto flex max-w-3xl overflow-x-auto">
-        {NAVIGATION.map(({ id, label, icon: Icon }) => (
-          <li key={id} className="min-w-16 flex-1">
-            <button type="button" onClick={() => onNavigate(id)} aria-current={active === id ? "page" : undefined} className={cn("flex min-h-16 w-full flex-col items-center justify-center gap-1 text-[11px] font-medium transition-colors", active === id ? "text-primary" : "text-ink-subtle hover:text-ink")}>
-              <span className={cn("grid h-7 w-11 place-items-center rounded-full transition-colors duration-150", active === id && "bg-sage")}><Icon className="size-5" aria-hidden="true" /></span>
-              {label}
+      <ul className="mx-auto flex max-w-3xl">
+        {primary.map(({ id, label, icon: Icon }) => (
+          <li key={id} className="flex-1">
+            <button type="button" onClick={() => onNavigate(id)} aria-current={active === id ? "page" : undefined} className={tab(active === id)}>
+              <span className={pill(active === id)}><Icon className="size-5" aria-hidden="true" /></span>{label}
             </button>
           </li>
         ))}
+        <li className="flex-1">
+          <button type="button" onClick={() => setMoreOpen(true)} aria-haspopup="dialog" className={tab(moreActive)}>
+            <span className={pill(moreActive)}><Menu className="size-5" aria-hidden="true" /></span>More
+          </button>
+        </li>
       </ul>
+      <Dialog open={moreOpen} onOpenChange={setMoreOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>More</DialogTitle><DialogDescription>Everything else in Penny.</DialogDescription></DialogHeader>
+          <ul className="grid gap-2">
+            {secondary.map(({ id, label, description, icon: Icon }) => (
+              <li key={id}>
+                <button type="button" onClick={() => { setMoreOpen(false); onNavigate(id); }} aria-current={active === id ? "page" : undefined} className={cn("flex min-h-14 w-full items-center gap-3 rounded-xl border p-3 text-left", active === id ? "border-accent bg-accent-soft" : "border-line hover:bg-sage-soft")}>
+                  <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-sage text-ink-muted"><Icon className="size-5" aria-hidden="true" /></span>
+                  <span><span className="block text-sm font-semibold text-ink">{label}</span><span className="block text-xs text-ink-subtle">{description}</span></span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </DialogContent>
+      </Dialog>
     </nav>
   );
 }
@@ -146,22 +171,6 @@ export function MonthSwitcher({ dashboard, loading, onChangeMonth }: { dashboard
 
 // ------------------------------------------------------------------ display controls
 
-export function DensitySwitch({ className }: { className?: string }) {
-  const { density, setDensity } = usePreferences();
-  return (
-    <div role="radiogroup" aria-label="Layout" className={cn("flex items-center gap-0.5 rounded-xl border border-line bg-surface p-0.5 shadow-[var(--shadow-card)]", className)}>
-      {DENSITY_OPTIONS.map((option) => {
-        const Icon = DENSITY_ICONS[option.value];
-        return (
-          <button key={option.value} type="button" role="radio" aria-checked={density === option.value} title={option.description} onClick={() => setDensity(option.value)} className={cn("inline-flex h-9 items-center gap-1.5 rounded-[0.6rem] px-2.5 text-xs font-semibold transition-colors", density === option.value ? "bg-sage text-ink" : "text-ink-subtle hover:text-ink")}>
-            <Icon className="size-3.5" aria-hidden="true" />{option.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 export function ThemeToggle() {
   const { resolvedTheme, setTheme } = usePreferences();
   const dark = resolvedTheme === "dark";
@@ -173,7 +182,7 @@ export function ThemeToggle() {
 }
 
 export function DisplaySettingsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const { theme, setTheme, density, setDensity } = usePreferences();
+  const { theme, setTheme } = usePreferences();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
@@ -182,21 +191,6 @@ export function DisplaySettingsDialog({ open, onOpenChange }: { open: boolean; o
           <DialogDescription>Choose how Penny looks. Your choice is saved on this device.</DialogDescription>
         </DialogHeader>
         <fieldset>
-          <legend className="text-sm font-semibold text-ink">Layout</legend>
-          <div className="mt-2 grid gap-2">
-            {DENSITY_OPTIONS.map((option) => {
-              const Icon = DENSITY_ICONS[option.value];
-              return (
-                <label key={option.value} className={cn("flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-accent", density === option.value ? "border-accent bg-accent-soft" : "border-line hover:bg-sage-soft")}>
-                  <input type="radio" name="density" value={option.value} checked={density === option.value} onChange={() => setDensity(option.value)} className="sr-only" />
-                  <Icon className="mt-0.5 size-5 shrink-0 text-accent-strong" aria-hidden="true" />
-                  <span><span className="block text-sm font-semibold text-ink">{option.label}</span><span className="block text-sm text-ink-subtle">{option.description}</span></span>
-                </label>
-              );
-            })}
-          </div>
-        </fieldset>
-        <fieldset className="mt-5">
           <legend className="text-sm font-semibold text-ink">Theme</legend>
           <div className="mt-2 grid grid-cols-3 gap-2">
             {THEME_OPTIONS.map((option) => {
@@ -228,15 +222,17 @@ export function DisplaySettingsDialog({ open, onOpenChange }: { open: boolean; o
 
 // ------------------------------------------------------------------ header
 
-export function PageHeader({ view, dashboard, monthLoading, onChangeMonth, onAddTransaction, onOpenDisplay }: { view: View; dashboard: Dashboard; monthLoading: boolean; onChangeMonth: (month: string) => void; onAddTransaction: () => void; onOpenDisplay: () => void }) {
+export function PageHeader({ view, dashboard, monthLoading, onChangeMonth, onAddTransaction, onOpenDisplay, onAsk }: { view: View; dashboard: Dashboard; monthLoading: boolean; onChangeMonth: (month: string) => void; onAddTransaction: () => void; onOpenDisplay: () => void; onAsk: (question: string) => void }) {
   const item = NAVIGATION.find((entry) => entry.id === view) ?? NAVIGATION[0];
   const firstName = dashboard.profile.display_name.split(" ")[0];
   const isCurrent = dashboard.active_month === dashboard.current_month;
-  const pastHome = view === "overview" && !isCurrent;
-  const title = view === "overview" ? (isCurrent ? `${greeting()}.` : `${formatMonth(dashboard.active_month)} in review`) : item.title;
-  const description = pastHome ? "You’re looking back at a past month. Balances and goals show today’s values." : view === "overview" ? `A clear view of ${firstName}’s financial position.` : item.description;
+  const pastHome = view === "today" && !isCurrent;
+  const title = view === "today" ? (isCurrent ? `${greeting()}, ${firstName}.` : `${formatMonth(dashboard.active_month)} in review`) : item.title;
+  const kept = dashboard.totals.cash_flow_cents;
+  const summary = `You have ${cad(dashboard.home.available_cents)} available and ${kept >= 0 ? `you’re on track to save ${cad(kept)}` : `you’re ${cad(-kept)} over`} this month.`;
+  const description = pastHome ? "You’re looking back at a past month. Balances and goals show today’s values." : view === "today" ? summary : item.description;
   const showMonth = MONTH_VIEWS.includes(view);
-  const showAdd = view === "overview" || view === "transactions";
+  const showAdd = view === "today" || view === "spending";
   return (
     <header className="sticky top-0 z-20 border-b border-line/70 bg-canvas/90 pt-[env(safe-area-inset-top)] backdrop-blur-md">
       <div className="mx-auto max-w-7xl px-4 py-3 sm:px-6 lg:px-10 lg:py-4">
@@ -245,13 +241,13 @@ export function PageHeader({ view, dashboard, monthLoading, onChangeMonth, onAdd
             <BrandMark className="size-9 lg:hidden" />
             <div className="min-w-0">
               <h1 id="page-title" tabIndex={-1} className="truncate text-lg font-semibold tracking-tight text-ink focus:outline-none sm:text-2xl">{title}</h1>
-              <p className="hidden truncate text-sm text-ink-subtle sm:block">{description}</p>
+              <p className="hidden text-sm text-ink-subtle sm:line-clamp-2">{description}</p>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <DensitySwitch className="hidden xl:flex" />
+            {view === "today" && <AskBar onAsk={onAsk} className="hidden w-64 md:block 2xl:w-96" />}
             <div className="hidden sm:block"><ThemeToggle /></div>
-            <button type="button" onClick={onOpenDisplay} aria-label="Display settings" className="grid size-10 place-items-center rounded-xl border border-line bg-surface text-ink-muted shadow-[var(--shadow-card)] hover:text-ink xl:hidden"><LayoutList className="size-[1.1rem]" /></button>
+            <button type="button" onClick={onOpenDisplay} aria-label="Display settings" className="grid size-10 place-items-center rounded-xl border border-line bg-surface text-ink-muted shadow-[var(--shadow-card)] hover:text-ink sm:hidden"><LayoutList className="size-[1.1rem]" /></button>
             {showAdd && (
               <Button onClick={onAddTransaction} className="shrink-0">
                 <Plus className="size-4" aria-hidden="true" /><span className="sm:hidden">Add</span><span className="hidden sm:inline">Add transaction</span>
@@ -274,61 +270,10 @@ export function PageHeader({ view, dashboard, monthLoading, onChangeMonth, onAdd
 }
 
 /** Account summary for small screens, where the sidebar is hidden. */
-export function MobileAccount({ dashboard, onOpenDisplay }: { dashboard: Dashboard; onOpenDisplay: () => void }) {
+export function MobileAccount({ dashboard }: { dashboard: Dashboard }) {
   return (
     <div className="space-y-3 lg:hidden">
       <AccountSummary dashboard={dashboard} />
-      <Button variant="outline" className="w-full" onClick={onOpenDisplay}><SlidersHorizontal className="size-4" aria-hidden="true" />Display settings</Button>
-    </div>
-  );
-}
-
-const DEFAULT_NOTIFICATIONS = { bills: true, budgets: true, goals: true, insights: false };
-
-/** Saved notification choices, or the defaults when storage is blocked or invalid. */
-function savedNotifications(): typeof DEFAULT_NOTIFICATIONS {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem("penny-notifications") ?? "null") as Record<string, unknown> | null;
-    if (parsed && Object.keys(DEFAULT_NOTIFICATIONS).every((key) => typeof parsed[key] === "boolean")) return parsed as typeof DEFAULT_NOTIFICATIONS;
-  } catch { /* Fall through to defaults. */ }
-  return DEFAULT_NOTIFICATIONS;
-}
-
-export function SettingsView() {
-  // Rendered only on the client after the dashboard loads, so reading storage here is safe.
-  const [notifications, setNotifications] = useState(savedNotifications);
-  useEffect(() => {
-    try { window.localStorage.setItem("penny-notifications", JSON.stringify(notifications)); } catch { /* Keep the in-memory choice. */ }
-  }, [notifications]);
-  const toggle = (key: keyof typeof notifications) => setNotifications((value) => ({ ...value, [key]: !value[key] }));
-  return (
-    <div className="mx-auto max-w-3xl space-y-6">
-      <section className="rounded-[var(--radius-card)] border border-line bg-surface p-5 shadow-[var(--shadow-card)] sm:p-6">
-        <h2 className="text-lg font-semibold text-ink">Appearance</h2>
-        <p className="mt-1 text-sm text-ink-subtle">Choose a density and theme that make financial information easiest to scan.</p>
-        <div className="mt-5 flex flex-wrap items-center gap-3"><DensitySwitch /><ThemeToggle /></div>
-      </section>
-      <section className="rounded-[var(--radius-card)] border border-line bg-surface p-5 shadow-[var(--shadow-card)] sm:p-6">
-        <h2 className="flex items-center gap-2 text-lg font-semibold text-ink"><span className="grid size-8 place-items-center rounded-lg bg-sage"><SlidersHorizontal className="size-4" /></span>Notification preferences</h2>
-        <p className="mt-1 text-sm text-ink-subtle">These demo preferences stay on this device. Penny does not send push notifications yet.</p>
-        <div className="mt-4 divide-y divide-line">
-          {([
-            ["bills", "Upcoming bills", "Reminders for fictional bills approaching their due date."],
-            ["budgets", "Budget changes", "Warnings when recorded spending moves above a category limit."],
-            ["goals", "Goal milestones", "Updates when a savings goal reaches a meaningful milestone."],
-            ["insights", "New insights", "Occasional notices when Penny detects a useful change."],
-          ] as const).map(([key, label, description]) => (
-            <label key={key} className="flex cursor-pointer items-center justify-between gap-4 py-4">
-              <span><span className="block text-sm font-semibold text-ink">{label}</span><span className="mt-0.5 block text-sm text-ink-subtle">{description}</span></span>
-              <input type="checkbox" checked={notifications[key]} onChange={() => toggle(key)} className="size-5 accent-black dark:accent-white" />
-            </label>
-          ))}
-        </div>
-      </section>
-      <section className="rounded-[var(--radius-card)] border border-line bg-surface p-5 sm:p-6">
-        <h2 className="text-lg font-semibold text-ink">Privacy and data</h2>
-        <p className="mt-2 text-sm leading-relaxed text-ink-muted">Penny currently uses fictional demo data. Authentication remains isolated through Supabase, and no bank, brokerage, or credit bureau is connected.</p>
-      </section>
     </div>
   );
 }

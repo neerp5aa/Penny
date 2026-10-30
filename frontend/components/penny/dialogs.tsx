@@ -5,7 +5,8 @@ import { ArrowDownLeft, ArrowUpRight, LoaderCircle, PiggyBank, Trash2 } from "lu
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input, Select } from "@/components/ui/input";
-import type { Budget, Dashboard, SavingsGoal, Transaction, TransactionWrite } from "@/lib/api";
+import { type AccountType, type Budget, type Category, type CategorySuggestion, type Dashboard, dashboardApi, type SavingsGoal, type Transaction, type TransactionWrite } from "@/lib/api";
+import { DatePicker } from "@/components/ui/date-picker";
 import { defaultTransactionDate, formatMonth } from "@/lib/format";
 import { centsToInput, parseCadToCents } from "@/lib/money";
 import { cad, Field } from "./shared";
@@ -38,12 +39,16 @@ function SubmitButton({ busy, label, className }: { busy: boolean; label: string
 // ---------------------------------------------------------------------------------------------
 // Transactions
 
-export function TransactionDialog({ target, dashboard, onClose, onSubmit, onRequestDelete }: {
+/** Runs a create call (category, account), applies the new dashboard, and returns it or an error. */
+export type InlineCreate = (action: () => Promise<Dashboard>) => Promise<Dashboard | string>;
+
+export function TransactionDialog({ target, dashboard, onClose, onSubmit, onRequestDelete, onCreate }: {
   target: Transaction | "new" | null;
   dashboard: Dashboard;
   onClose: () => void;
   onSubmit: (id: string | null, body: TransactionWrite) => Promise<string | null>;
   onRequestDelete: (item: Transaction) => void;
+  onCreate: InlineCreate;
 }) {
   const item = target && target !== "new" ? target : null;
   return (
@@ -51,20 +56,60 @@ export function TransactionDialog({ target, dashboard, onClose, onSubmit, onRequ
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{item ? "Edit transaction" : "Add a transaction"}</DialogTitle>
-          <DialogDescription>{item ? "Update the details below. Totals recalculate as soon as you save." : "Record money coming in or going out. Penny updates your totals right away."}</DialogDescription>
+          <DialogDescription>{item ? "Totals recalculate as soon as you save." : "Penny picks a category from the description. You can change it."}</DialogDescription>
         </DialogHeader>
-        <TransactionForm item={item} dashboard={dashboard} onSubmit={(body) => onSubmit(item?.id ?? null, body)} onRequestDelete={item ? () => onRequestDelete(item) : undefined} />
+        <TransactionForm key={item?.id ?? "new"} item={item} dashboard={dashboard} onCreate={onCreate} onSubmit={(body) => onSubmit(item?.id ?? null, body)} onRequestDelete={item ? () => onRequestDelete(item) : undefined} />
       </DialogContent>
     </Dialog>
   );
 }
 
-function TransactionForm({ item, dashboard, onSubmit, onRequestDelete }: { item: Transaction | null; dashboard: Dashboard; onSubmit: Submit<TransactionWrite>; onRequestDelete?: () => void }) {
+const KIND_STYLE = {
+  spending: { label: "Money out", icon: ArrowUpRight, sign: "−", on: "border-danger bg-danger-soft text-danger", button: "bg-danger text-on-danger hover:bg-danger-hover" },
+  income: { label: "Money in", icon: ArrowDownLeft, sign: "+", on: "border-zone-green bg-zone-green-soft text-[#0d7a4d] dark:text-zone-green", button: "bg-zone-green text-white hover:brightness-95" },
+} as const;
+
+export const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = { chequing: "Chequing", savings: "Savings", credit: "Credit card", cash: "Cash", investment: "Investment", other: "Other" };
+
+/** Categories for one kind, with subcategories listed under their parent ("Food › Groceries"). */
+export function categoryOptions(categories: Category[], kind: Category["kind"]): { id: string; label: string }[] {
+  const own = categories.filter((category) => category.kind === kind);
+  return own.filter((category) => !category.parent_id).flatMap((parent) => [
+    { id: parent.id, label: parent.name },
+    ...own.filter((child) => child.parent_id === parent.id).map((child) => ({ id: child.id, label: `${parent.name} › ${child.name}` })),
+  ]);
+}
+
+const NEW = "__new__";
+
+function TransactionForm({ item, dashboard, onSubmit, onRequestDelete, onCreate }: { item: Transaction | null; dashboard: Dashboard; onSubmit: Submit<TransactionWrite>; onRequestDelete?: () => void; onCreate: InlineCreate }) {
   const [kind, setKind] = useState<Transaction["kind"]>(item?.kind ?? "spending");
   const [amountError, setAmountError] = useState("");
   const [formError, setFormError] = useState("");
   const [busy, setBusy] = useState(false);
-  const month = formatMonth(dashboard.active_month);
+  const [category, setCategory] = useState(item?.category_id ?? "");
+  const [categoryTouched, setCategoryTouched] = useState(Boolean(item));
+  const [suggestion, setSuggestion] = useState<CategorySuggestion | null>(null);
+  const [account, setAccount] = useState(item?.account_id ?? dashboard.accounts.find((a) => a.account_type === "chequing")?.id ?? dashboard.accounts[0]?.id ?? "");
+  const [date, setDate] = useState(item?.occurred_on ?? defaultTransactionDate(dashboard.active_month));
+  const [adding, setAdding] = useState<"category" | "account" | null>(null);
+  const style = KIND_STYLE[kind];
+  const options = categoryOptions(dashboard.categories, kind);
+
+  function switchKind(next: Transaction["kind"]) {
+    setKind(next);
+    if (dashboard.categories.find((c) => c.id === category)?.kind !== next) { setCategory(""); setCategoryTouched(false); setSuggestion(null); }
+  }
+
+  /** Fills in the category from the merchant name, unless the user already picked one. */
+  async function suggestCategory(description: string) {
+    if (categoryTouched || !description.trim()) return;
+    try {
+      const result = await dashboardApi.suggestCategory(description.trim(), kind);
+      setSuggestion(result);
+      if (result.category_id) setCategory(result.category_id);
+    } catch { /* Suggestions are optional; the user can still pick a category. */ }
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -76,11 +121,11 @@ function TransactionForm({ item, dashboard, onSubmit, onRequestDelete }: { item:
     setBusy(true);
     const error = await onSubmit({
       description: String(form.get("description")).trim(),
-      account_id: String(form.get("account_id")),
-      category_id: String(form.get("category_id")) || null,
+      account_id: account,
+      category_id: category || null,
       amount_cents: amount.cents,
       kind,
-      occurred_on: String(form.get("occurred_on")),
+      occurred_on: date,
     });
     setBusy(false);
     if (error) setFormError(error);
@@ -88,51 +133,130 @@ function TransactionForm({ item, dashboard, onSubmit, onRequestDelete }: { item:
 
   return (
     <form onSubmit={submit} className="space-y-4">
-      <fieldset>
-        <legend className="text-sm font-semibold text-ink">Type</legend>
-        <div className="mt-1.5 grid grid-cols-2 gap-2 rounded-xl bg-sage-soft p-1">
-          {([["spending", "Money out", ArrowUpRight], ["income", "Money in", ArrowDownLeft]] as const).map(([value, label, Icon]) => (
-            <label key={value} className={cn("flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-lg text-sm font-semibold transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-accent", kind === value ? "bg-surface text-ink shadow-sm" : "text-ink-muted hover:text-ink")}>
-              <input type="radio" name="kind" value={value} checked={kind === value} onChange={() => setKind(value)} className="sr-only" />
-              <Icon className={cn("size-4", value === "income" ? "text-accent" : "text-ink-subtle")} aria-hidden="true" />{label}
-            </label>
-          ))}
-        </div>
-      </fieldset>
-      <div className="grid gap-4 sm:grid-cols-[1fr_1.4fr]">
-        <Field label="Amount (CAD)" error={amountError}>
-          {(props) => <Input {...props} name="amount" inputMode="decimal" autoComplete="off" placeholder="0.00" defaultValue={item ? centsToInput(String(item.amount_cents)) : ""} required />}
-        </Field>
-        <Field label="Description">
-          {(props) => <Input {...props} name="description" placeholder={kind === "income" ? "e.g. Part-time pay" : "e.g. Groceries"} defaultValue={item?.description} required maxLength={160} />}
-        </Field>
+      <div role="radiogroup" aria-label="Type" className="grid grid-cols-2 gap-2">
+        {(["spending", "income"] as const).map((value) => {
+          const option = KIND_STYLE[value];
+          const Icon = option.icon;
+          const selected = kind === value;
+          return (
+            <button key={value} type="button" role="radio" aria-checked={selected} onClick={() => switchKind(value)} className={cn("flex min-h-14 items-center justify-center gap-2 rounded-2xl border-2 text-base font-semibold transition-colors", selected ? option.on : "border-line text-ink-muted hover:bg-sage-soft")}>
+              <Icon className="size-5" aria-hidden="true" />{option.label}
+            </button>
+          );
+        })}
       </div>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Category">
-          {(props) => (
-            <Select {...props} name="category_id" defaultValue={item?.category_id ?? ""}>
-              <option value="">Uncategorized</option>
-              {dashboard.categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
-            </Select>
-          )}
-        </Field>
-        <Field label="Account">
-          {(props) => (
-            <Select {...props} name="account_id" defaultValue={item?.account_id ?? dashboard.accounts[0]?.id} required>
-              {dashboard.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
-            </Select>
-          )}
-        </Field>
-      </div>
-      <Field label="Date" hint={`Only ${month} transactions count toward this month’s totals.`}>
-        {(props) => <Input {...props} name="occurred_on" type="date" defaultValue={item?.occurred_on ?? defaultTransactionDate(dashboard.active_month)} required />}
+
+      <Field label="Amount (CAD)" error={amountError}>
+        {(props) => (
+          <div className={cn("flex items-center rounded-2xl border-2 px-4 transition-colors focus-within:ring-4 focus-within:ring-accent/15", style.on)}>
+            <span className="tabular shrink-0 whitespace-nowrap text-3xl font-semibold" aria-hidden="true">{style.sign}$</span>
+            <input {...props} name="amount" inputMode="decimal" autoComplete="off" placeholder="0.00" defaultValue={item ? centsToInput(String(item.amount_cents)) : ""} required className="tabular min-h-16 w-full min-w-0 bg-transparent px-1 text-3xl font-semibold text-ink placeholder:text-ink-subtle/60 focus:outline-none" />
+          </div>
+        )}
       </Field>
+
+      <Field label="Description">
+        {(props) => <Input {...props} name="description" placeholder={kind === "income" ? "e.g. Harbour Books pay" : "e.g. Starbucks"} defaultValue={item?.description} required maxLength={160} onBlur={(event) => void suggestCategory(event.target.value)} />}
+      </Field>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="Category" hint={suggestion?.category_name && !categoryTouched && category === suggestion.category_id ? `Picked automatically${suggestion.necessity ? ` · a ${suggestion.necessity}` : ""}` : undefined}>
+          {(props) => (
+            <Select {...props} value={category} onChange={(event) => { if (event.target.value === NEW) { setAdding("category"); return; } setCategory(event.target.value); setCategoryTouched(true); }}>
+              <option value="">Uncategorized</option>
+              {options.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+              <option value={NEW}>+ New {kind === "income" ? "income type" : "category"}…</option>
+            </Select>
+          )}
+        </Field>
+        <Field label={kind === "income" ? "Paid into" : "Paid from"}>
+          {(props) => (
+            <Select {...props} value={account} onChange={(event) => { if (event.target.value === NEW) { setAdding("account"); return; } setAccount(event.target.value); }} required>
+              {dashboard.accounts.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
+              <option value={NEW}>+ New account…</option>
+            </Select>
+          )}
+        </Field>
+      </div>
+
+      {adding === "category" && <NewCategory kind={kind} dashboard={dashboard} onCreate={onCreate} onDone={(id) => { setAdding(null); if (id) { setCategory(id); setCategoryTouched(true); } }} />}
+      {adding === "account" && <NewAccount onCreate={onCreate} onDone={(id) => { setAdding(null); if (id) setAccount(id); }} />}
+
+      <Field label="Date">
+        {(props) => <DatePicker id={props.id} aria-describedby={props["aria-describedby"]} value={date} onChange={setDate} />}
+      </Field>
+
       <FormError message={formError} />
       <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row">
         {onRequestDelete && <Button variant="destructive-soft" onClick={onRequestDelete} disabled={busy}><Trash2 className="size-4" aria-hidden="true" />Delete</Button>}
-        <SubmitButton busy={busy} label={item ? "Save changes" : "Add transaction"} />
+        <Button type="submit" disabled={busy} className={cn("min-h-12 flex-1", style.button)}>
+          {busy && <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />}
+          {item ? "Save changes" : kind === "income" ? "Add money in" : "Add money out"}
+        </Button>
       </div>
     </form>
+  );
+}
+
+/** Inline "new category" form; reports the created id (or null if cancelled). */
+function NewCategory({ kind, dashboard, onCreate, onDone }: { kind: Category["kind"]; dashboard: Dashboard; onCreate: InlineCreate; onDone: (id: string | null) => void }) {
+  const [name, setName] = useState("");
+  const [parent, setParent] = useState("");
+  const [error, setError] = useState("");
+  const parents = dashboard.categories.filter((c) => c.kind === kind && !c.parent_id);
+  async function save() {
+    if (!name.trim()) { setError("Give it a name"); return; }
+    const result = await onCreate(() => dashboardApi.createCategory({ name: name.trim(), kind, parent_id: parent || null }));
+    if (typeof result === "string") { setError(result); return; }
+    onDone(result.categories.find((c) => c.kind === kind && c.name.toLowerCase() === name.trim().toLowerCase())?.id ?? null);
+  }
+  return (
+    <div className="space-y-3 rounded-2xl border border-line bg-sage-soft p-3">
+      <p className="text-sm font-semibold text-ink">New {kind === "income" ? "income type" : "category"}</p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <Input aria-label="Name" placeholder={kind === "income" ? "e.g. Tutoring" : "e.g. Pets"} value={name} onChange={(event) => setName(event.target.value)} maxLength={40} autoFocus />
+        {kind === "spending" && (
+          <Select aria-label="Put it under" value={parent} onChange={(event) => setParent(event.target.value)}>
+            <option value="">Top-level category</option>
+            {parents.map((option) => <option key={option.id} value={option.id}>Under {option.name}</option>)}
+          </Select>
+        )}
+      </div>
+      {error && <p role="alert" className="text-sm text-danger">{error}</p>}
+      <div className="flex gap-2"><Button size="sm" onClick={() => void save()}>Add</Button><Button size="sm" variant="ghost" onClick={() => onDone(null)}>Cancel</Button></div>
+    </div>
+  );
+}
+
+function NewAccount({ onCreate, onDone }: { onCreate: InlineCreate; onDone: (id: string | null) => void }) {
+  const [name, setName] = useState("");
+  const [type, setType] = useState<AccountType>("chequing");
+  const [limit, setLimit] = useState("");
+  const [error, setError] = useState("");
+  async function save() {
+    if (!name.trim()) { setError("Give it a name"); return; }
+    let limitCents: number | null = null;
+    if (type === "credit") {
+      try { limitCents = parseCadToCents(limit); } catch { setError("Enter the card’s credit limit"); return; }
+      if (limitCents <= 0) { setError("Enter the card’s credit limit"); return; }
+    }
+    const result = await onCreate(() => dashboardApi.createAccount({ name: name.trim(), account_type: type, balance_cents: 0, credit_limit_cents: limitCents }));
+    if (typeof result === "string") { setError(result); return; }
+    onDone(result.accounts.find((a) => a.name === name.trim())?.id ?? null);
+  }
+  return (
+    <div className="space-y-3 rounded-2xl border border-line bg-sage-soft p-3">
+      <p className="text-sm font-semibold text-ink">New account</p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <Input aria-label="Account name" placeholder="e.g. Wallet cash" value={name} onChange={(event) => setName(event.target.value)} maxLength={60} autoFocus />
+        <Select aria-label="Account type" value={type} onChange={(event) => setType(event.target.value as AccountType)}>
+          {Object.entries(ACCOUNT_TYPE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        </Select>
+        {type === "credit" && <Input aria-label="Credit limit (CAD)" inputMode="decimal" placeholder="Credit limit, e.g. 1500" value={limit} onChange={(event) => setLimit(event.target.value)} />}
+      </div>
+      {error && <p role="alert" className="text-sm text-danger">{error}</p>}
+      <div className="flex gap-2"><Button size="sm" onClick={() => void save()}>Add</Button><Button size="sm" variant="ghost" onClick={() => onDone(null)}>Cancel</Button></div>
+    </div>
   );
 }
 
@@ -165,7 +289,7 @@ function BudgetForm({ item, dashboard, onSubmit, onRequestDelete }: { item: Budg
   const [formError, setFormError] = useState("");
   const [busy, setBusy] = useState(false);
   const budgeted = useMemo(() => new Set(dashboard.budgets.map((budget) => budget.category_id)), [dashboard.budgets]);
-  const choices = dashboard.categories.filter((category) => item?.category_id === category.id || (!budgeted.has(category.id) && category.name !== "Income"));
+  const choices = categoryOptions(dashboard.categories, "spending").filter((option) => item?.category_id === option.id || !budgeted.has(option.id));
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -188,7 +312,7 @@ function BudgetForm({ item, dashboard, onSubmit, onRequestDelete }: { item: Budg
       <Field label="Category" hint={item ? "To budget a different category, add a new budget." : undefined}>
         {(props) => (
           <Select {...props} name="category_id" defaultValue={item?.category_id ?? choices[0]?.id} disabled={Boolean(item)} required>
-            {choices.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+            {choices.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
           </Select>
         )}
       </Field>

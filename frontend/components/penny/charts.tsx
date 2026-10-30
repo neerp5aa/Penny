@@ -216,7 +216,7 @@ export function CashFlowChart({ months, selectedMonth, onSelectMonth, height = 2
 
 /** Fixed colour slot per spending category, in the API's category order (never by rank). */
 export function categoryColours(categories: Category[]): (categoryId: string | null) => string {
-  const slots = new Map(categories.filter((category) => category.name !== "Income").map((category, index) => [category.id, index < 7 ? `var(--chart-cat-${index + 1})` : "var(--chart-other)"]));
+  const slots = new Map(categories.filter((category) => category.kind === "spending" && !category.parent_id).map((category, index) => [category.id, index < 7 ? `var(--chart-cat-${index + 1})` : "var(--chart-other)"]));
   return (categoryId) => (categoryId && slots.get(categoryId)) || "var(--chart-other)";
 }
 

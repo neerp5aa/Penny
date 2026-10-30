@@ -4,18 +4,21 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import Link from "next/link";
 import { Bot, CloudOff, LogIn, RefreshCw } from "lucide-react";
-import { DisplaySettingsDialog, MobileAccount, MobileNavigation, PageHeader, SettingsView, Sidebar } from "@/components/penny/app-shell";
-import { BudgetView } from "@/components/penny/budget-view";
+import { DisplaySettingsDialog, MobileAccount, MobileNavigation, PageHeader, Sidebar } from "@/components/penny/app-shell";
+import { SettingsView } from "@/components/penny/settings-view";
 import { CoachView, useCoachChat } from "@/components/penny/coach-view";
-import { AddMoneyDialog, BudgetDialog, ConfirmDialog, type ConfirmRequest, GoalDialog, TransactionDialog } from "@/components/penny/dialogs";
-import { GoalsView, HomeView } from "@/components/penny/home-view";
-import { InsightsView } from "@/components/penny/insights-view";
-import { CreditView, LearnView } from "@/components/penny/learn-credit-views";
+import { AddMoneyDialog, BudgetDialog, ConfirmDialog, type ConfirmRequest, GoalDialog, type InlineCreate, TransactionDialog } from "@/components/penny/dialogs";
+import { GoalsView } from "@/components/penny/goals-view";
+import { InvestView } from "@/components/penny/invest-view";
+import { LearnView } from "@/components/penny/learn-view";
+import { type BillInput, RecurringView } from "@/components/penny/recurring-view";
+import { SpendingView } from "@/components/penny/spending-view";
+import { TodayView } from "@/components/penny/today-view";
 import { usePreferences } from "@/components/penny/preferences";
 import { cad, describeError, NAVIGATION, type View } from "@/components/penny/shared";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { ToastProvider, useToast } from "@/components/ui/toast";
-import { type Budget, type Dashboard, dashboardApi, type Mission, type SavingsGoal, type Transaction } from "@/lib/api";
+import { type Bill, type Budget, type Dashboard, dashboardApi, type Lesson, type Mission, type SavingsGoal, type Transaction } from "@/lib/api";
 import { addMonths, formatMonth } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -73,9 +76,9 @@ function deleteConfirmation(mutate: Mutate, options: { title: string; descriptio
 function PennyApp() {
   const toast = useToast();
   const coachChat = useCoachChat();
-  const { density, resolvedTheme, setTheme } = usePreferences();
+  const { resolvedTheme, setTheme } = usePreferences();
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
-  const [view, setView] = useState<View>("overview");
+  const [view, setView] = useState<View>("today");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [monthLoading, setMonthLoading] = useState(false);
@@ -155,7 +158,7 @@ function PennyApp() {
   }, [dashboard, monthLoading, prefetch, remember, toast]);
 
   const openMonth = useCallback((month: string) => {
-    if (view !== "overview") navigate("overview");
+    if (view !== "today") navigate("today");
     goToMonth(month);
   }, [goToMonth, navigate, view]);
 
@@ -166,6 +169,17 @@ function PennyApp() {
     setDashboard(data);
     setHistoryVersion((value) => value + 1);
   }, [remember]);
+
+  /** Creates something from inside a form (a category, an account) and returns the new snapshot. */
+  const createInline = useCallback<InlineCreate>(async (action) => {
+    try {
+      const data = await action();
+      applyChange(data);
+      return data;
+    } catch (reason) {
+      return describeError(reason, "That couldn’t be created").detail;
+    }
+  }, [applyChange]);
 
   /** Runs an API mutation; shows a toast on success and returns an error message on failure. */
   const mutate = useCallback<Mutate>(async (action, success, undo) => {
@@ -244,23 +258,32 @@ function PennyApp() {
     void mutate(() => dashboardApi.completeMission(mission.id, month), `Mission complete · +${mission.xp_reward} XP`)
       .then((error) => { if (error) toast({ title: "Couldn’t complete the mission", description: error, tone: "error" }); });
   };
-  const markBillPaid = (bill: Dashboard["upcoming_bills"][number]) => {
-    void mutate(() => dashboardApi.markBillPaid(bill.id, month), "Bill marked paid")
+  const markBillPaid = (bill: Bill) => {
+    void mutate(() => dashboardApi.markBillPaid(bill.id, month), `${bill.name} paid`)
       .then((error) => { if (error) toast({ title: "Couldn’t update the bill", description: error, tone: "error" }); });
   };
+  const saveBill = (id: string | null, body: BillInput) =>
+    mutate(() => (id ? dashboardApi.updateBill(id, body, month) : dashboardApi.createBill(body, month)), id ? "Bill updated" : `${body.name} added`);
+  const confirmDeleteBill = (bill: Bill) => {
+    setConfirm(deleteConfirmation(mutate, {
+      title: `Delete ${bill.name}?`,
+      description: "It will stop appearing on your forecast. Past payments stay.",
+      confirmLabel: "Delete bill",
+      noun: "Bill",
+      remove: () => dashboardApi.deleteBill(bill.id, month),
+      restore: () => dashboardApi.createBill({ name: bill.name, amount_cents: bill.amount_cents, category_id: bill.category_id, account_id: bill.account_id, frequency: bill.frequency, next_due: bill.next_due, auto_record: bill.auto_record }, month),
+    }));
+  };
 
-  const homeActions = {
-    onNavigate: navigate,
-    onSelectMonth: openMonth,
-    onAddTransaction: () => setTransactionTarget("new"),
-    onEditTransaction: setTransactionTarget,
-    onDeleteTransaction: confirmDeleteTransaction,
-    onAddGoal: () => setGoalTarget("new"),
-    onEditGoal: setGoalTarget,
-    onAddToGoal: setAddMoneyTarget,
-    onEditBudget: setBudgetTarget,
-    onCompleteMission: completeMission,
-    onMarkBillPaid: markBillPaid,
+  /** Opens Penny AI and asks a question on the user's behalf (from a button elsewhere). */
+  const askPenny = (question: string) => {
+    navigate("ai");
+    void coachChat.send(question);
+  };
+  const completeLesson = async (lesson: Lesson) => {
+    const error = await mutate(() => dashboardApi.completeLesson(lesson.id), `Lesson complete · +${lesson.xp_reward} XP`);
+    if (error) toast({ title: "Couldn’t save your progress", description: error, tone: "error" });
+    return error === null;
   };
 
   return (
@@ -268,27 +291,28 @@ function PennyApp() {
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[70] focus:rounded-xl focus:bg-surface focus:px-4 focus:py-3 focus:font-semibold focus:shadow-[var(--shadow-raised)]">Skip to content</a>
       <Sidebar active={view} dashboard={dashboard} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((value) => !value)} onNavigate={navigate} onOpenDisplay={() => setDisplayOpen(true)} />
       <div className={cn("transition-[padding] duration-200", sidebarCollapsed ? "lg:pl-20" : "lg:pl-64")}>
-        <PageHeader view={view} dashboard={dashboard} monthLoading={monthLoading} onChangeMonth={goToMonth} onAddTransaction={() => setTransactionTarget("new")} onOpenDisplay={() => setDisplayOpen(true)} />
-        <main id="main" tabIndex={-1} className="mx-auto max-w-7xl px-4 pb-[calc(6.5rem+env(safe-area-inset-bottom))] pt-5 focus:outline-none sm:px-6 lg:px-10 lg:pb-12 lg:pt-8 compact:lg:pt-6">
-          <div key={`${view}-${density}`} className={monthLoading ? "animate-fade opacity-70 transition-opacity duration-200" : "animate-fade transition-opacity duration-200"} aria-busy={monthLoading}>
-            {view === "overview" && <HomeView dashboard={dashboard} density={density} historyVersion={historyVersion} actions={homeActions} />}
-            {view === "transactions" && <BudgetView dashboard={dashboard} density={density} onAddTransaction={() => setTransactionTarget("new")} onEditTransaction={setTransactionTarget} onDeleteTransaction={confirmDeleteTransaction} onAddBudget={() => setBudgetTarget("new")} onEditBudget={setBudgetTarget} onCopyBudgets={copyBudgets} />}
-            {view === "insights" && <InsightsView dashboard={dashboard} density={density} historyVersion={historyVersion} onOpenMonth={openMonth} />}
-            {view === "goals" && <GoalsView dashboard={dashboard} onAdd={() => setGoalTarget("new")} onEdit={setGoalTarget} onAddMoney={setAddMoneyTarget} onComplete={(goal) => void mutate(() => dashboardApi.updateGoal(goal.id, { current_cents: goal.target_cents, status: "completed" }, month), `${goal.name} marked complete`)} />}
+        <PageHeader view={view} dashboard={dashboard} monthLoading={monthLoading} onChangeMonth={goToMonth} onAddTransaction={() => setTransactionTarget("new")} onOpenDisplay={() => setDisplayOpen(true)} onAsk={askPenny} />
+        <main id="main" tabIndex={-1} className="mx-auto max-w-7xl px-4 pb-[calc(6.5rem+env(safe-area-inset-bottom))] pt-5 focus:outline-none sm:px-6 lg:px-10 lg:pb-12 lg:pt-8">
+          <div key={view} className={monthLoading ? "animate-fade opacity-70 transition-opacity duration-200" : "animate-fade transition-opacity duration-200"} aria-busy={monthLoading}>
+            {view === "today" && <TodayView dashboard={dashboard} historyVersion={historyVersion} onNavigate={navigate} onAsk={askPenny} />}
+            {view === "spending" && <SpendingView dashboard={dashboard} historyVersion={historyVersion} onAsk={askPenny} onSelectMonth={goToMonth} onAddTransaction={() => setTransactionTarget("new")} onEditTransaction={setTransactionTarget} onDeleteTransaction={confirmDeleteTransaction} onAddBudget={() => setBudgetTarget("new")} onEditBudget={setBudgetTarget} onCopyBudgets={copyBudgets} />}
+            {view === "recurring" && <RecurringView dashboard={dashboard} onAsk={askPenny} onMarkPaid={markBillPaid} onSave={saveBill} onDelete={confirmDeleteBill} />}
+            {view === "goals" && <GoalsView dashboard={dashboard} onAsk={askPenny} onAdd={() => setGoalTarget("new")} onEdit={setGoalTarget} onAddMoney={setAddMoneyTarget} onComplete={(goal) => void mutate(() => dashboardApi.updateGoal(goal.id, { status: "completed" }, month), `${goal.name} reached`)} />}
+            {view === "invest" && <InvestView dashboard={dashboard} onNavigate={navigate} />}
+            {view === "learn" && <LearnView dashboard={dashboard} onCompleteLesson={completeLesson} onCompleteMission={completeMission} />}
             {view === "ai" && <CoachView chat={coachChat} dashboard={dashboard} onDashboardChange={applyChange} onApproved={(message) => toast({ title: "Change applied", description: message })} />}
-            {view === "learning" && <LearnView />}
-            {view === "credit" && <CreditView dashboard={dashboard} />}
-            {view === "settings" && <SettingsView />}
+            {view === "settings" && <SettingsView dashboard={dashboard} save={mutate} />}
           </div>
-          <div className="mt-8"><MobileAccount dashboard={dashboard} onOpenDisplay={() => setDisplayOpen(true)} /></div>
+          <div className="mt-8"><MobileAccount dashboard={dashboard} /></div>
         </main>
       </div>
       <MobileNavigation active={view} onNavigate={navigate} />
-      {view !== "ai" && <button type="button" onClick={() => navigate("ai")} className="fixed bottom-[calc(5.25rem+env(safe-area-inset-bottom))] right-4 z-20 inline-flex min-h-11 items-center gap-2 rounded-full bg-primary px-4 text-sm font-semibold text-on-primary shadow-[var(--shadow-raised)] transition-transform hover:-translate-y-0.5 motion-reduce:transform-none lg:bottom-6 lg:right-6"><Bot className="size-4" />Ask Penny</button>}
+      {view !== "ai" && view !== "today" && <button type="button" onClick={() => navigate("ai")} className="fixed bottom-[calc(5.25rem+env(safe-area-inset-bottom))] right-4 z-20 inline-flex min-h-11 items-center gap-2 rounded-full bg-primary px-4 text-sm font-semibold text-on-primary shadow-[var(--shadow-raised)] transition-transform hover:-translate-y-0.5 motion-reduce:transform-none lg:bottom-6 lg:right-6"><Bot className="size-4" />Ask Penny</button>}
 
       <EditDialogs
         dashboard={dashboard}
         mutate={mutate}
+        onCreate={createInline}
         onOpenMonth={openMonth}
         transaction={[transactionTarget, setTransactionTarget, confirmDeleteTransaction]}
         budget={[budgetTarget, setBudgetTarget, confirmDeleteBudget]}
@@ -304,9 +328,10 @@ function PennyApp() {
 type DialogSlot<T> = [target: T | null, setTarget: (target: T | null) => void, requestDelete: (item: Exclude<T, "new">) => void];
 
 /** The create/edit dialogs. Each submit resolves to an error message shown inside its dialog. */
-function EditDialogs({ dashboard, mutate, onOpenMonth, transaction, budget, goal, addMoney }: {
+function EditDialogs({ dashboard, mutate, onCreate, onOpenMonth, transaction, budget, goal, addMoney }: {
   dashboard: Dashboard;
   mutate: Mutate;
+  onCreate: InlineCreate;
   onOpenMonth: (month: string) => void;
   transaction: DialogSlot<Transaction | "new">;
   budget: DialogSlot<Budget | "new">;
@@ -344,6 +369,7 @@ function EditDialogs({ dashboard, mutate, onOpenMonth, transaction, budget, goal
       <TransactionDialog
         target={transactionTarget}
         dashboard={dashboard}
+        onCreate={onCreate}
         onClose={() => setTransactionTarget(null)}
         onRequestDelete={deleteTransaction}
         onSubmit={(id, body) => saveAndClose(mutate(() => (id ? dashboardApi.updateTransaction(id, body, month) : dashboardApi.createTransaction(body, month)), () => transactionSaved(id, body.occurred_on)), () => setTransactionTarget(null))}

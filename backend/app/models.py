@@ -35,7 +35,7 @@ class DemoUser(StrictModel):
 class Account(StrictModel):
     id: str
     name: str
-    account_type: Literal["chequing", "savings", "credit"]
+    account_type: Literal["chequing", "savings", "credit", "cash", "investment", "other"]
     balance_cents: int = Field(ge=0)
     credit_limit_cents: int | None = Field(default=None, ge=0)
 
@@ -49,6 +49,9 @@ class Transaction(StrictModel):
     amount_cents: int = Field(ge=0)
     kind: Literal["income", "spending"]
     occurred_on: date
+    # Filled in when a dashboard snapshot is built; never trusted from clients.
+    necessity: Literal["need", "want"] | None = None
+    auto_categorized: bool = False
 
 
 class Budget(StrictModel):

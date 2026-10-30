@@ -1,52 +1,120 @@
+import calendar
 from collections.abc import Iterable
 from dataclasses import asdict
-from datetime import date
+from datetime import date, timedelta
 from threading import RLock
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import HTTPException, status
 
 from app.config import get_settings
+from app.dashboard_features import (
+    LESSON_XP,
+    bill_due_dates,
+    build_calendar,
+    build_foundations,
+    build_learning,
+    build_recurring,
+    flexible_budget_cents,
+    next_due_after,
+    score_month,
+)
 from app.dashboard_models import (
-    AvailabilitySnapshot,
+    AccountWrite,
+    Bill,
+    BillPatch,
+    BillWrite,
     BudgetPatch,
     BudgetWrite,
     Category,
     CategorySpending,
+    CategoryWrite,
     CreditSnapshot,
-    DailySpending,
+    CycleReview,
     DashboardResponse,
     DashboardTotals,
     FinancialHealth,
     FinancialHealthFactor,
-    FinancialInsight,
+    ForecastDay,
+    ForecastEvent,
+    ForecastResponse,
     Goal,
     GoalPatch,
     GoalWrite,
     HistoryMonth,
     HistoryResponse,
     HistoryTotals,
+    HomeSummary,
     Mission,
+    MoneyCalendar,
     MonthlyBudget,
+    MonthPoint,
     NetWorthSnapshot,
+    PayCycle,
+    PaySchedule,
+    RecurringExpense,
+    RecurringSummary,
     SpendingClassification,
     TransactionPatch,
     TransactionWrite,
-    UpcomingBill,
 )
+from app.domain.categorize import categorize, necessity
+from app.domain.csv_import import parse_transactions_csv
 from app.domain.finance import (
-    FinancialSummary,
     TransactionAmount,
     TransactionKind,
+    add_months,
     average_cents,
     build_summary,
+    ceil_div,
+    format_cad,
+    months_until,
     share_basis_points,
 )
+from app.domain.money_days import DayScore
+from app.domain.pay_cycle import (
+    TIGHT_THRESHOLD_CENTS,
+    Cycle,
+    DayBalance,
+    cycles_around,
+    forecast,
+    paydays,
+)
+from app.domain.pay_cycle import Event as CycleEvent
+from app.domain.recurring import detect_fixed_series
 from app.fixtures import build_demo_dashboard
 from app.history_fixtures import build_history_budgets, build_history_transactions
-from app.models import Transaction
+from app.models import Account, Transaction
 
 MAX_HISTORY_MONTHS = 24
+# Account types whose balance is money you can spend day to day.
+SPENDABLE_TYPES = ("chequing", "cash")
+
+
+def _pay_cycle(cycle: Cycle) -> PayCycle:
+    label = (
+        "Current" if cycle.offset == 0 else f"{'P' if cycle.offset < 0 else 'F'}{abs(cycle.offset)}"
+    )
+    return PayCycle(offset=cycle.offset, label=label, start=cycle.start, end=cycle.end)
+
+
+def _forecast_day(day: DayBalance) -> ForecastDay:
+    return ForecastDay(
+        day=day.day,
+        start_cents=day.start_cents,
+        end_cents=day.end_cents,
+        status=day.status,
+        past=day.past,
+        is_today=day.is_today,
+        is_payday=day.is_payday,
+        events=[
+            ForecastEvent(
+                name=e.name, amount_cents=e.amount_cents, kind=e.kind, projected=e.projected
+            )  # type: ignore[arg-type]
+            for e in day.events
+        ],
+    )
 
 
 def month_start(value: date) -> date:
@@ -67,6 +135,34 @@ def _same_month(value: date, month: date) -> bool:
     return value.year == month.year and value.month == month.month
 
 
+# fmt: off
+def _starter_categories() -> list[Category]:
+    def spending(id: str, name: str, colour: str, parent: str | None = None) -> Category:
+        return Category(id=id, name=name, colour_token=colour, kind="spending", parent_id=parent)
+
+    def income(id: str, name: str) -> Category:
+        return Category(id=id, name=name, colour_token="emerald", kind="income")
+
+    return [
+        income("cat-income", "Paycheque"),
+        income("cat-scholarship", "Scholarship & bursary"),
+        income("cat-allowance", "Allowance"),
+        income("cat-gift", "Gift"),
+        income("cat-benefits", "Benefits & pension"),
+        income("cat-refund", "Refund"),
+        spending("cat-housing", "Housing", "rose"),
+        spending("cat-food", "Food", "amber"),
+        spending("cat-groceries", "Groceries", "amber", "cat-food"),
+        spending("cat-eating-out", "Eating out", "amber", "cat-food"),
+        spending("cat-transport", "Transportation", "sky"),
+        spending("cat-phone", "Phone", "violet"),
+        spending("cat-school", "School", "indigo"),
+        spending("cat-fun", "Fun", "pink"),
+        spending("cat-health", "Health", "emerald"),
+    ]
+# fmt: on
+
+
 class DashboardStore:
     """Thread-safe fictional store for the hackathon MVP."""
 
@@ -80,20 +176,9 @@ class DashboardStore:
         # Supabase user ids. Every public operation checks the caller against this set.
         self._owner_user_ids = frozenset({self._profile.id, *owner_user_ids})
         self._accounts = {item.id: item for item in fixture.accounts}
-        self._categories = {
-            item.id: item
-            for item in [
-                Category(id="cat-income", name="Income", colour_token="emerald"),
-                Category(id="cat-housing", name="Housing", colour_token="rose"),
-                Category(id="cat-food", name="Food", colour_token="amber"),
-                Category(id="cat-transport", name="Transportation", colour_token="sky"),
-                Category(id="cat-phone", name="Phone", colour_token="violet"),
-                Category(id="cat-school", name="School", colour_token="indigo"),
-                Category(id="cat-fun", name="Fun", colour_token="pink"),
-                Category(id="cat-health", name="Health", colour_token="emerald"),
-            ]
-        }
+        self._categories = {item.id: item for item in _starter_categories()}
         category_ids = {category.name: category.id for category in self._categories.values()}
+        category_ids["Income"] = "cat-income"
         self._transactions = {
             item.id: item.model_copy(
                 update={
@@ -104,6 +189,14 @@ class DashboardStore:
             for item in fixture.transactions
         }
         self._transactions.update({item.id: item for item in build_history_transactions()})
+        # Fixtures only know top-level names; refine them into income types and subcategories.
+        for item_id, item in self._transactions.items():
+            if item.kind == "income" or item.category_id == "cat-food":
+                refined = categorize(item.description, item.kind).category_id
+                if refined:
+                    self._transactions[item_id] = item.model_copy(
+                        update={"category_id": refined, "category": self._categories[refined].name}
+                    )
         self._budgets = {
             f"budget-{index}": {
                 "id": f"budget-{index}",
@@ -170,30 +263,61 @@ class DashboardStore:
             ),
         ]
         self._bills = {
-            "bill-rent": UpcomingBill(
-                id="bill-rent",
-                name="Student housing",
-                amount_cents=82_500,
-                due_on=date(2026, 11, 1),
-                status="scheduled",
-                payment_source="not_verified",
-            ),
-            "bill-phone": UpcomingBill(
-                id="bill-phone",
-                name="Mobile plan",
-                amount_cents=4_500,
-                due_on=date(2026, 11, 14),
-                status="scheduled",
-                payment_source="not_verified",
-            ),
-            "bill-streaming": UpcomingBill(
-                id="bill-streaming",
-                name="Streaming subscription",
-                amount_cents=1_299,
-                due_on=date(2026, 11, 18),
-                status="scheduled",
-                payment_source="not_verified",
-            ),
+            bill.id: bill
+            for bill in [
+                Bill(
+                    id="bill-rent",
+                    name="Student housing",
+                    amount_cents=82_500,
+                    category_id="cat-housing",
+                    account_id="acct-chequing",
+                    frequency="monthly",
+                    next_due=date(2026, 11, 1),
+                    auto_record=True,
+                ),
+                Bill(
+                    id="bill-transit",
+                    name="Halifax Transit pass",
+                    amount_cents=7_800,
+                    category_id="cat-transport",
+                    account_id="acct-chequing",
+                    frequency="monthly",
+                    next_due=date(2026, 11, 3),
+                    auto_record=True,
+                ),
+                Bill(
+                    id="bill-phone",
+                    name="Mobile plan",
+                    amount_cents=4_500,
+                    category_id="cat-phone",
+                    account_id="acct-chequing",
+                    frequency="monthly",
+                    next_due=date(2026, 11, 14),
+                    auto_record=True,
+                ),
+                Bill(
+                    id="bill-streaming",
+                    name="Streaming subscription",
+                    amount_cents=1_299,
+                    category_id="cat-fun",
+                    account_id="acct-chequing",
+                    frequency="monthly",
+                    next_due=date(2026, 11, 18),
+                    auto_record=False,
+                ),
+            ]
+        }
+        self._pay_schedule: PaySchedule | None = PaySchedule(
+            name="Harbour Books pay",
+            amount_cents=126_400,
+            account_id="acct-chequing",
+            frequency="monthly",
+            next_payday=date(2026, 11, 25),
+        )
+        # Fictional learning history so the demo opens with a streak in progress.
+        self._lessons_completed: dict[str, date] = {
+            "budget-basics": self.today() - timedelta(days=2),
+            "needs-vs-wants": self.today() - timedelta(days=1),
         }
         self._lock = RLock()
 
@@ -305,7 +429,6 @@ class DashboardStore:
             score=sum(item.score for item in factors) * 100 // available_points
             if available_points
             else 0,
-            weekly_change=None,
             factors=factors,
             methodology=(
                 "A behaviour-based score from budget adherence, positive cash flow, goal progress, "
@@ -314,70 +437,189 @@ class DashboardStore:
             limitations=limitations,
         )
 
-    def _insights(
-        self,
-        summary: FinancialSummary,
-        breakdown: list[CategorySpending],
-    ) -> list[FinancialInsight]:
-        cash_flow = summary.cash_flow_cents
-        budget_left = summary.budget_remaining_cents
-        larger, smaller = ("income", "spending") if cash_flow >= 0 else ("spending", "income")
-        insights = [
-            FinancialInsight(
-                id="cash-flow",
-                headline=(
-                    "You are on track to keep money this month"
-                    if cash_flow >= 0
-                    else "Spending is ahead of income this month"
-                ),
-                explanation=(
-                    f"Current {larger} is higher than {smaller}, "
-                    "based on this month’s recorded transactions."
-                ),
-                action_label="Review cash flow",
-                destination="transactions",
-                source="Income minus spending from the active month",
+    def today(self) -> date:
+        """The demo's "today": the real date, kept inside the demo's current month."""
+        last = calendar.monthrange(self.active_month.year, self.active_month.month)[1]
+        return min(max(date.today(), self.active_month), self.active_month.replace(day=last))
+
+    def _goal(self, item: dict) -> Goal:
+        remaining = max(0, item["target_cents"] - item["current_cents"])
+        target = item["target_date"]
+        return Goal(
+            **item,
+            progress_basis_points=min(
+                10_000, item["current_cents"] * 10_000 // item["target_cents"]
+            ),
+            monthly_needed_cents=(
+                ceil_div(remaining, months_until(self.active_month, target))
+                if target and item["status"] == "active"
+                else None
+            ),
+        )
+
+    @staticmethod
+    def _with_necessity(item: Transaction) -> Transaction:
+        if item.kind != "spending":
+            return item
+        return item.model_copy(update={"necessity": necessity(item.description, item.category_id)})
+
+    def _typical(self, month: date, field: str) -> int:
+        """Average monthly income or cash flow over the three months before `month`."""
+        totals = []
+        for offset in range(1, 4):
+            rows = self._monthly_transactions(add_months(month, -offset))
+            if not rows:
+                continue
+            income = sum(t.amount_cents for t in rows if t.kind == "income")
+            spending = sum(t.amount_cents for t in rows if t.kind == "spending")
+            totals.append(income if field == "income" else income - spending)
+        return sum(totals) // len(totals) if totals else 0
+
+    def _health_score(self, month: date) -> int:
+        rows = self._monthly_transactions(month)
+        income = sum(t.amount_cents for t in rows if t.kind == "income")
+        spending = sum(t.amount_cents for t in rows if t.kind == "spending")
+        budget = sum(item["limit_cents"] for item in self._monthly_budgets(month))
+        return self._financial_health(month, spending, budget, income - spending).score
+
+    def _cash_cents(self) -> int:
+        return sum(item.balance_cents for item in self._accounts_of(*SPENDABLE_TYPES, "savings"))
+
+    def _cash_at_end_of(self, day: date) -> int:
+        """Cash (chequing, cash, savings) at the end of `day`, reconstructed from transactions."""
+        accounts = {item.id for item in self._accounts_of(*SPENDABLE_TYPES, "savings")}
+        later = sum(
+            t.amount_cents if t.kind == "income" else -t.amount_cents
+            for t in self._transactions.values()
+            if t.account_id in accounts and day < t.occurred_on <= self.today()
+        )
+        return self._cash_cents() - later
+
+    def _home(self, cash_flow_cents: int, goals: list[Goal], allowance_cents: int) -> HomeSummary:
+        today = self.today()
+        months = [add_months(self.active_month, offset) for offset in range(-5, 1)]
+
+        def month_end(month: date) -> date:
+            last = month.replace(day=calendar.monthrange(month.year, month.month)[1])
+            return min(last, today)
+
+        def net(month: date) -> int:
+            rows = self._monthly_transactions(month)
+            return sum(t.amount_cents if t.kind == "income" else -t.amount_cents for t in rows)
+
+        def spent_through(month: date, day: int) -> int:
+            last = min(day, calendar.monthrange(month.year, month.month)[1])
+            return sum(
+                t.amount_cents
+                for t in self._monthly_transactions(month)
+                if t.kind == "spending" and t.occurred_on.day <= last
             )
+
+        cash_history = [
+            MonthPoint(month=m, value=self._cash_at_end_of(month_end(m))) for m in months
         ]
-        if budget_left >= 0:
-            insights.append(
-                FinancialInsight(
-                    id="budget-room",
-                    headline="Your spending plan still has room",
-                    explanation=(
-                        "Total recorded spending remains within the combined category limits."
-                    ),
-                    action_label="See category limits",
-                    destination="budget",
-                    source="Monthly budget limits minus categorized spending",
-                )
-            )
-        else:
-            insights.append(
-                FinancialInsight(
-                    id="budget-over",
-                    headline="Your monthly plan needs attention",
-                    explanation="Total recorded spending is above the combined category limits.",
-                    action_label="Review budgets",
-                    destination="budget",
-                    source="Monthly budget limits minus spending",
-                )
-            )
-        if breakdown:
-            top = breakdown[0]
-            insights.append(
-                FinancialInsight(
-                    id="top-category",
-                    headline=f"{top.category_name} is your largest spending category",
-                    explanation=(
-                        "It currently represents the largest share of recorded spending this month."
-                    ),
-                    action_label="Inspect transactions",
-                    destination="transactions",
-                    source="Category share of active-month spending",
-                )
-            )
-        return insights[:3]
+        previous_cash = cash_history[-2].value
+        this_spend = spent_through(self.active_month, today.day)
+        last_spend = spent_through(add_months(self.active_month, -1), today.day)
+        return HomeSummary(
+            available_cents=self._spendable_cents(),
+            cash_cents=self._cash_cents(),
+            cash_history=cash_history,
+            cash_change_basis_points=(
+                (self._cash_cents() - previous_cash) * 10_000 // previous_cash
+                if previous_cash > 0
+                else None
+            ),
+            savings_cents=sum(item.balance_cents for item in self._accounts_of("savings")),
+            savings_history=[MonthPoint(month=m, value=net(m)) for m in months],
+            monthly_saved_cents=cash_flow_cents,
+            monthly_goal_cents=sum(goal.monthly_needed_cents or 0 for goal in goals),
+            spending_change_basis_points=(
+                (this_spend - last_spend) * 10_000 // last_spend if last_spend > 0 else None
+            ),
+            weekly_flexible_cents=allowance_cents * 7,
+        )
+
+    def _accounts_of(self, *types: str) -> list[Account]:
+        return [item for item in self._accounts.values() if item.account_type in types]
+
+    def _spendable_cents(self) -> int:
+        """Money available for day-to-day spending: chequing and cash accounts."""
+        return sum(item.balance_cents for item in self._accounts_of(*SPENDABLE_TYPES))
+
+    def _next_payday(self) -> date | None:
+        schedule = self._pay_schedule
+        if not schedule:
+            return None
+        today = self.today()
+        upcoming = paydays(
+            schedule.frequency,
+            schedule.next_payday,
+            today + timedelta(days=1),
+            today + timedelta(days=400),
+            schedule.interval_days,
+        )
+        return upcoming[0] if upcoming else None
+
+    def _recurring(self) -> RecurringSummary:
+        return build_recurring(
+            bills=list(self._bills.values()),
+            transactions=list(self._transactions.values()),
+            category_names={c.id: c.name for c in self._categories.values()},
+            active_month=self.active_month,
+            today=self.today(),
+            next_payday=self._next_payday(),
+            typical_income_cents=self._typical(self.active_month, "income"),
+        )
+
+    def _top_level(self, category_id: str | None) -> str | None:
+        category = self._categories.get(category_id) if category_id else None
+        return category.parent_id or category.id if category else None
+
+    def _scored_month(self, month: date) -> list[DayScore]:
+        """Daily Money Scores for a month, through today when it is the current month."""
+        transactions = self._monthly_transactions(month)
+        fixed = detect_fixed_series(self._transactions.values(), month)
+        budget = flexible_budget_cents(
+            sum(item["limit_cents"] for item in self._monthly_budgets(month)), fixed
+        )
+        days = calendar.monthrange(month.year, month.month)[1]
+        through = self.today().day if month == self.active_month else days
+        return score_month(month, transactions, fixed, budget, through)
+
+    def _money_calendar(
+        self, month: date, recurring_items: list[RecurringExpense]
+    ) -> MoneyCalendar:
+        scores = self._scored_month(month)
+        history = [
+            day for offset in (2, 1) for day in self._scored_month(add_months(month, -offset))
+        ] + scores
+        fixed = detect_fixed_series(self._transactions.values(), month)
+        due: dict[date, list[str]] = {}
+        if month == self.active_month:
+            for item in recurring_items:
+                if item.next_due.month == month.month:
+                    due.setdefault(item.next_due, []).append(item.name)
+        return build_calendar(
+            month=month,
+            today=self.today() if month == self.active_month else None,
+            month_transactions=self._monthly_transactions(month),
+            scores=scores,
+            history=history,
+            flexible_budget=flexible_budget_cents(
+                sum(item["limit_cents"] for item in self._monthly_budgets(month)), fixed
+            ),
+            due_by_day=due,
+        )
+
+    def complete_lesson(self, user_id: str, lesson_id: str) -> DashboardResponse:
+        with self._lock:
+            self.require_owner(user_id)
+            if lesson_id not in LESSON_XP:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Lesson not found")
+            # Idempotent: completing twice never awards XP twice.
+            self._lessons_completed.setdefault(lesson_id, self.today())
+            return self._snapshot()
 
     def _monthly_transactions(self, month: date) -> list[Transaction]:
         return [
@@ -396,12 +638,12 @@ class DashboardStore:
     def _category_breakdown(
         self, transactions: Iterable[Transaction]
     ) -> tuple[dict[str | None, int], list[CategorySpending]]:
+        """Spending per top-level category (subcategories roll up into their parent)."""
         spending_by_category: dict[str | None, int] = {}
         for item in transactions:
             if item.kind == "spending":
-                spending_by_category[item.category_id] = (
-                    spending_by_category.get(item.category_id, 0) + item.amount_cents
-                )
+                key = self._top_level(item.category_id)
+                spending_by_category[key] = spending_by_category.get(key, 0) + item.amount_cents
         total = sum(spending_by_category.values())
         breakdown = []
         for category_id, spent in sorted(
@@ -419,6 +661,18 @@ class DashboardStore:
             )
         return spending_by_category, breakdown
 
+    @staticmethod
+    def _credit_snapshot(account: Account | None) -> CreditSnapshot | None:
+        if not account or not account.credit_limit_cents:
+            return None
+        return CreditSnapshot(
+            account_id=account.id,
+            account_name=account.name,
+            balance_cents=account.balance_cents,
+            credit_limit_cents=account.credit_limit_cents,
+            utilization_basis_points=account.balance_cents * 10_000 // account.credit_limit_cents,
+        )
+
     def _snapshot(self, month: date | None = None) -> DashboardResponse:
         with self._lock:
             month = month_start(month or self.active_month)
@@ -432,10 +686,31 @@ class DashboardStore:
             total_budget = sum(item["limit_cents"] for item in monthly_budgets)
             summary = build_summary(domain_transactions, total_budget, [])
             spending_by_category, breakdown = self._category_breakdown(monthly)
+            exact: dict[str | None, int] = {}
+            for item in monthly:
+                if item.kind == "spending":
+                    exact[item.category_id] = exact.get(item.category_id, 0) + item.amount_cents
+            carried = not monthly_budgets and month == self.active_month
+            if carried:
+                previous = max(
+                    (b["month_start"] for b in self._budgets.values() if b["month_start"] < month),
+                    default=None,
+                )
+                monthly_budgets = [
+                    {**item, "id": f"carry-{item['id']}", "month_start": month}
+                    for item in (self._monthly_budgets(previous) if previous else [])
+                ]
+                total_budget = sum(item["limit_cents"] for item in monthly_budgets)
+                summary = build_summary(domain_transactions, total_budget, [])
             budgets = []
             for item in monthly_budgets:
                 category = self._categories[item["category_id"]]
-                spent = spending_by_category.get(category.id, 0)
+                # A parent budget covers its subcategories; a subcategory budget only itself.
+                spent = (
+                    exact.get(category.id, 0)
+                    if category.parent_id
+                    else spending_by_category.get(category.id, 0)
+                )
                 budgets.append(
                     MonthlyBudget(
                         **item,
@@ -445,64 +720,22 @@ class DashboardStore:
                         usage_basis_points=(spent * 10_000 // item["limit_cents"])
                         if item["limit_cents"]
                         else 0,
+                        carried_over=carried,
                     )
                 )
-            daily: list[DailySpending] = []
-            running = 0
-            for day in sorted({item.occurred_on for item in monthly if item.kind == "spending"}):
-                spent = sum(
-                    item.amount_cents
-                    for item in monthly
-                    if item.kind == "spending" and item.occurred_on == day
-                )
-                running += spent
-                daily.append(DailySpending(day=day, spent_cents=spent, cumulative_cents=running))
-            goals = [
-                Goal(
-                    **item,
-                    progress_basis_points=min(
-                        10_000, item["current_cents"] * 10_000 // item["target_cents"]
-                    ),
-                )
-                for item in self._goals.values()
-            ]
-            credit_account = next(
-                item for item in self._accounts.values() if item.account_type == "credit"
-            )
-            credit_limit = credit_account.credit_limit_cents or 1
+            goals = [self._goal(item) for item in self._goals.values()]
+            monthly = [self._with_necessity(item) for item in monthly]
+            credit_account = next(iter(self._accounts_of("credit")), None)
+            liabilities = sum(item.balance_cents for item in self._accounts_of("credit"))
             asset_balance = sum(
                 item.balance_cents
                 for item in self._accounts.values()
                 if item.account_type != "credit"
             )
-            cash_balance = sum(
-                item.balance_cents
-                for item in self._accounts.values()
-                if item.account_type == "chequing"
-            )
-            savings_balance = sum(
-                item.balance_cents
-                for item in self._accounts.values()
-                if item.account_type == "savings"
-            )
-            needs_ids = {
-                "cat-housing",
-                "cat-food",
-                "cat-transport",
-                "cat-phone",
-                "cat-school",
-                "cat-health",
-            }
-            needs = sum(
-                amount
-                for category_id, amount in spending_by_category.items()
-                if category_id in needs_ids
-            )
-            wants = sum(
-                amount
-                for category_id, amount in spending_by_category.items()
-                if category_id not in needs_ids
-            )
+            cash_balance = self._spendable_cents()
+            savings_balance = sum(item.balance_cents for item in self._accounts_of("savings"))
+            needs = sum(t.amount_cents for t in monthly if t.necessity == "need")
+            wants = sum(t.amount_cents for t in monthly if t.necessity == "want")
             spending_total = needs + wants
             previous_transactions = self._monthly_transactions(_previous_month(month))
             previous_cash_flow = (
@@ -513,9 +746,10 @@ class DashboardStore:
                 if previous_transactions
                 else None
             )
-            unpaid_bills = sum(
-                item.amount_cents for item in self._bills.values() if item.status == "scheduled"
-            )
+            recurring = self._recurring()
+            calendar_view = self._money_calendar(month, recurring.items)
+            mission_xp = sum(item.xp_reward for item in self._missions if item.completed)
+            learning = build_learning(self._lessons_completed, mission_xp, self.today())
             return DashboardResponse(
                 active_month=month,
                 current_month=self.active_month,
@@ -527,53 +761,61 @@ class DashboardStore:
                 budgets=sorted(budgets, key=lambda item: item.category_name),
                 savings_goals=goals,
                 missions=self._missions,
-                xp_total=sum(item.xp_reward for item in self._missions if item.completed),
+                xp_total=learning.xp_total,
                 category_spending=breakdown,
-                daily_spending=daily,
-                credit=CreditSnapshot(
-                    account_id=credit_account.id,
-                    account_name=credit_account.name,
-                    balance_cents=credit_account.balance_cents,
-                    credit_limit_cents=credit_limit,
-                    utilization_basis_points=credit_account.balance_cents * 10_000 // credit_limit,
-                ),
-                investment_data=AvailabilitySnapshot(
-                    available=False,
-                    title="Investment data unavailable",
-                    explanation=(
-                        "Penny does not connect to brokerages or provide investment "
-                        "recommendations in this MVP."
-                    ),
-                ),
-                credit_score_data=AvailabilitySnapshot(
-                    available=False,
-                    title="Credit score unavailable",
-                    explanation=(
-                        "No verified Canadian credit-bureau data source is connected. Penny only "
-                        "provides educational utilization guidance."
-                    ),
-                ),
+                credit=self._credit_snapshot(credit_account),
                 financial_health=self._financial_health(
                     month, summary.spending_cents, total_budget, summary.cash_flow_cents
+                ).model_copy(
+                    update={
+                        "history": [
+                            MonthPoint(month=m, value=self._health_score(m))
+                            for m in (add_months(month, offset) for offset in range(-5, 0))
+                            if self._monthly_transactions(m)
+                        ]
+                    }
                 ),
-                insights=self._insights(summary, breakdown),
+                money_calendar=calendar_view,
+                recurring=recurring,
+                learning=learning,
+                investing_foundations=build_foundations(
+                    savings_cents=savings_balance,
+                    fixed_monthly_cents=recurring.fixed_monthly_cents,
+                    card_balance_cents=liabilities,
+                    typical_surplus_cents=self._typical(month, "cash_flow"),
+                    goals_due_within_year=sum(
+                        1
+                        for goal in goals
+                        if goal.status == "active"
+                        and goal.target_date
+                        and goal.target_date < add_months(self.active_month, 12)
+                    ),
+                ),
                 spending_classification=SpendingClassification(
                     needs_cents=needs,
                     wants_cents=wants,
                     needs_basis_points=share_basis_points(needs, spending_total),
                     wants_basis_points=share_basis_points(wants, spending_total),
                 ),
-                upcoming_bills=sorted(self._bills.values(), key=lambda item: item.due_on),
+                bills=sorted(self._bills.values(), key=lambda item: item.next_due),
+                pay_schedule=self._pay_schedule,
+                home=self._home(
+                    summary.cash_flow_cents, goals, calendar_view.daily_allowance_cents
+                ),
                 net_worth=NetWorthSnapshot(
                     cash_cents=cash_balance,
                     savings_cents=savings_balance,
                     investments_cents=None,
-                    liabilities_cents=credit_account.balance_cents,
-                    net_worth_cents=asset_balance - credit_account.balance_cents,
+                    liabilities_cents=liabilities,
+                    net_worth_cents=asset_balance - liabilities,
                 ),
                 previous_month_cash_flow_cents=previous_cash_flow,
                 spending_power_cents=max(
-                    0, min(summary.budget_remaining_cents, asset_balance - unpaid_bills)
+                    0,
+                    min(
+                        summary.budget_remaining_cents,
+                        cash_balance - recurring.due_before_payday_cents,
+                    ),
                 ),
                 totals=DashboardTotals(
                     **asdict(summary),
@@ -708,16 +950,339 @@ class DashboardStore:
             self._missions[index] = self._missions[index].model_copy(update={"completed": True})
             return self._snapshot()
 
+    # ------------------------------------------------------------------ bills
+
+    def _record_bill(self, bill: Bill, on: date) -> None:
+        """Record one payment of a bill as a transaction and move it to its next due date."""
+        transaction = Transaction(
+            id=f"tx-{uuid4().hex[:12]}",
+            description=bill.name,
+            category=self._category_name(bill.category_id),
+            account_id=bill.account_id,
+            category_id=bill.category_id,
+            amount_cents=bill.amount_cents,
+            kind="spending",
+            occurred_on=on,
+        )
+        self._apply_account_effect(transaction, 1)
+        self._transactions[transaction.id] = transaction
+        self._bills[bill.id] = bill.model_copy(
+            update={"last_paid_on": on, "next_due": next_due_after(bill.next_due, bill.frequency)}
+        )
+
+    def _auto_record_due_bills(self) -> None:
+        """Auto-record bills are paid on their due date without the user having to tap."""
+        today = self.today()
+        for bill_id in list(self._bills):
+            while (bill := self._bills[bill_id]).auto_record and bill.next_due <= today:
+                try:
+                    self._record_bill(bill, bill.next_due)
+                except HTTPException:
+                    break  # Not enough money in the account: leave it for the user.
+
     def mark_bill_paid(self, user_id: str, bill_id: str) -> DashboardResponse:
         with self._lock:
             self.require_owner(user_id)
             bill = self._bills.get(bill_id)
             if not bill:
-                raise HTTPException(status.HTTP_404_NOT_FOUND, "Upcoming bill not found")
-            self._bills[bill_id] = bill.model_copy(
-                update={"status": "paid", "payment_source": "user_marked"}
-            )
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Bill not found")
+            self._record_bill(bill, min(self.today(), bill.next_due))
             return self._snapshot()
+
+    def _validate_bill(self, account_id: str, category_id: str | None) -> None:
+        if account_id not in self._accounts:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown account")
+        if category_id and self._category(category_id).kind != "spending":
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "Bills need a spending category"
+            )
+
+    def create_bill(self, user_id: str, request: BillWrite) -> DashboardResponse:
+        with self._lock:
+            self.require_owner(user_id)
+            self._validate_bill(request.account_id, request.category_id)
+            category_id = request.category_id or categorize(request.name, "spending").category_id
+            bill = Bill(
+                id=f"bill-{uuid4().hex[:10]}",
+                **{**request.model_dump(), "category_id": category_id},
+            )
+            self._bills[bill.id] = bill
+            return self._snapshot()
+
+    def update_bill(self, user_id: str, bill_id: str, request: BillPatch) -> DashboardResponse:
+        with self._lock:
+            self.require_owner(user_id)
+            bill = self._bills.get(bill_id)
+            if not bill:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Bill not found")
+            updated = bill.model_copy(update=request.model_dump(exclude_unset=True))
+            self._validate_bill(updated.account_id, updated.category_id)
+            self._bills[bill_id] = updated
+            return self._snapshot()
+
+    def delete_bill(self, user_id: str, bill_id: str) -> DashboardResponse:
+        with self._lock:
+            self.require_owner(user_id)
+            if self._bills.pop(bill_id, None) is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Bill not found")
+            return self._snapshot()
+
+    # ------------------------------------------------------------------ pay schedule
+
+    def set_pay_schedule(self, user_id: str, request: PaySchedule) -> DashboardResponse:
+        with self._lock:
+            self.require_owner(user_id)
+            if request.account_id not in self._accounts:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown account")
+            if (request.frequency == "custom") != (request.interval_days is not None):
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    "Set interval_days only for a custom pay schedule",
+                )
+            self._pay_schedule = request
+            return self._snapshot()
+
+    def forecast(
+        self,
+        user_id: str,
+        offset: int,
+        mode: Literal["bills", "budget"],
+        plan: tuple[str, int, date] | None = None,
+    ) -> ForecastResponse:
+        """`plan` is an unsaved what-if purchase (name, cents, day) added to the projection."""
+        with self._lock:
+            self.require_owner(user_id)
+            schedule = self._pay_schedule
+            if not schedule:
+                raise HTTPException(status.HTTP_409_CONFLICT, "Set up your pay schedule first")
+            today = self.today()
+            cycles = cycles_around(
+                schedule.frequency, schedule.next_payday, today, 1, 2, schedule.interval_days
+            )
+            cycle = next((item for item in cycles if item.offset == offset), None)
+            if not cycle:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown pay cycle")
+            spendable = {item.id for item in self._accounts_of(*SPENDABLE_TYPES)}
+            actual = [
+                CycleEvent(
+                    t.occurred_on,
+                    t.description,
+                    t.amount_cents if t.kind == "income" else -t.amount_cents,
+                    "income" if t.kind == "income" else "spending",
+                    False,
+                )
+                for t in self._transactions.values()
+                if t.account_id in spendable and t.occurred_on <= today
+            ]
+            horizon = cycles[-1].end
+            recorded_today = any(e.day == today and e.kind == "income" for e in actual)
+            projected = [
+                CycleEvent(day, schedule.name, schedule.amount_cents, "income", True)
+                for day in paydays(
+                    schedule.frequency,
+                    schedule.next_payday,
+                    today,
+                    horizon,
+                    schedule.interval_days,
+                )
+                if day > today or not recorded_today
+            ]
+            for bill in self._bills.values():
+                if bill.account_id in spendable:
+                    projected += [
+                        CycleEvent(day, bill.name, -bill.amount_cents, "bill", True)
+                        for day in bill_due_dates(bill, today, horizon)
+                    ]
+            if plan:
+                name, cents, day = plan
+                if day < today:
+                    raise HTTPException(
+                        status.HTTP_422_UNPROCESSABLE_CONTENT, "Plan a purchase for today or later"
+                    )
+                projected.append(CycleEvent(day, f"Planned: {name}", -cents, "planned", True))
+            daily = self._snapshot().money_calendar.daily_allowance_cents if mode == "budget" else 0
+            all_paydays = set(
+                paydays(
+                    schedule.frequency,
+                    schedule.next_payday,
+                    cycle.start,
+                    cycle.end,
+                    schedule.interval_days,
+                )
+            )
+            days = forecast(
+                cycle, today, self._spendable_cents(), actual, projected, all_paydays, daily
+            )
+            lowest = min(days, key=lambda item: item.end_cents)
+            current = next(item for item in cycles if item.offset == 0)
+            next_payday = current.end + timedelta(days=1)
+            return ForecastResponse(
+                cycles=[_pay_cycle(item) for item in cycles],
+                cycle=_pay_cycle(cycle),
+                mode=mode,
+                days=[_forecast_day(item) for item in days],
+                starting_cents=days[0].start_cents,
+                ending_cents=days[-1].end_cents,
+                lowest_day=lowest.day,
+                lowest_cents=lowest.end_cents,
+                next_payday=next_payday,
+                days_until_payday=(next_payday - today).days,
+                daily_budget_cents=daily,
+                tight_threshold_cents=TIGHT_THRESHOLD_CENTS,
+                review=self._cycle_review(cycle, cycles) if cycle.end < today else None,
+                methodology=(
+                    "Past days use your recorded transactions in chequing and cash accounts. "
+                    "Future days add expected paydays and subtract scheduled bills on their "
+                    "due dates; budget mode also sets aside your daily flexible allowance. "
+                    f"Days under {format_cad(TIGHT_THRESHOLD_CENTS)} are tight."
+                ),
+            )
+
+    def _cycle_review(self, cycle: Cycle, cycles: list[Cycle]) -> CycleReview:
+        def rows(start: date, end: date) -> list[Transaction]:
+            return [t for t in self._transactions.values() if start <= t.occurred_on <= end]
+
+        current = rows(cycle.start, cycle.end)
+        spending = [t for t in current if t.kind == "spending"]
+        biggest = max(spending, key=lambda t: t.amount_cents, default=None)
+        length = (cycle.end - cycle.start).days + 1
+        before = rows(cycle.start - timedelta(days=length), cycle.start - timedelta(days=1))
+        return CycleReview(
+            income_cents=sum(t.amount_cents for t in current if t.kind == "income"),
+            spent_cents=sum(t.amount_cents for t in spending),
+            biggest_expense_name=biggest.description if biggest else None,
+            biggest_expense_cents=biggest.amount_cents if biggest else None,
+            previous_spent_cents=(
+                sum(t.amount_cents for t in before if t.kind == "spending") if before else None
+            ),
+        )
+
+    # ------------------------------------------------------------------ categories and accounts
+
+    def create_category(self, user_id: str, request: CategoryWrite) -> DashboardResponse:
+        with self._lock:
+            self.require_owner(user_id)
+            name = request.name.strip()
+            if any(
+                c.kind == request.kind and c.name.casefold() == name.casefold()
+                for c in self._categories.values()
+            ):
+                raise HTTPException(status.HTTP_409_CONFLICT, "That category already exists")
+            if request.parent_id:
+                parent = self._category(request.parent_id)
+                if parent.parent_id or parent.kind != request.kind:
+                    raise HTTPException(
+                        status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        "A subcategory needs a top-level parent of the same type",
+                    )
+            category = Category(
+                id=f"cat-{uuid4().hex[:10]}",
+                name=name,
+                colour_token="slate" if request.kind == "spending" else "emerald",
+                kind=request.kind,
+                parent_id=request.parent_id,
+                custom=True,
+            )
+            self._categories[category.id] = category
+            return self._snapshot()
+
+    def delete_category(self, user_id: str, category_id: str) -> DashboardResponse:
+        with self._lock:
+            self.require_owner(user_id)
+            self._category(category_id)
+            in_use = (
+                any(t.category_id == category_id for t in self._transactions.values())
+                or any(b["category_id"] == category_id for b in self._budgets.values())
+                or any(b.category_id == category_id for b in self._bills.values())
+                or any(c.parent_id == category_id for c in self._categories.values())
+            )
+            if in_use:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    "This category is in use. Move its transactions, budgets, bills, and "
+                    "subcategories first.",
+                )
+            del self._categories[category_id]
+            return self._snapshot()
+
+    def create_account(self, user_id: str, request: AccountWrite) -> DashboardResponse:
+        with self._lock:
+            self.require_owner(user_id)
+            if (request.account_type == "credit") != (request.credit_limit_cents is not None):
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    "Credit accounts need a credit limit; other accounts can't have one",
+                )
+            account = Account(id=f"acct-{uuid4().hex[:10]}", **request.model_dump())
+            self._accounts[account.id] = account
+            return self._snapshot()
+
+    def rename_account(self, user_id: str, account_id: str, name: str) -> DashboardResponse:
+        with self._lock:
+            self.require_owner(user_id)
+            account = self._accounts.get(account_id)
+            if not account:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
+            self._accounts[account_id] = account.model_copy(update={"name": name.strip()})
+            return self._snapshot()
+
+    def delete_account(self, user_id: str, account_id: str) -> DashboardResponse:
+        with self._lock:
+            self.require_owner(user_id)
+            if account_id not in self._accounts:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
+            in_use = any(t.account_id == account_id for t in self._transactions.values()) or any(
+                b.account_id == account_id for b in self._bills.values()
+            )
+            if in_use or (self._pay_schedule and self._pay_schedule.account_id == account_id):
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    "This account has transactions, bills, or your paycheque. Move them first.",
+                )
+            del self._accounts[account_id]
+            return self._snapshot()
+
+    # ------------------------------------------------------------------ CSV import
+
+    def import_csv(self, user_id: str, text: str, account_id: str) -> tuple[int, list[str]]:
+        """Adds history from a spreadsheet. Imported rows do not change account balances."""
+        with self._lock:
+            self.require_owner(user_id)
+            if account_id not in self._accounts:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown account")
+            rows, errors = parse_transactions_csv(text, self.today())
+            existing = {
+                (t.occurred_on, t.description.casefold(), t.amount_cents, t.kind)
+                for t in self._transactions.values()
+            }
+            names = {c.name.casefold(): c for c in self._categories.values()}
+            imported = 0
+            for row in rows:
+                key = (row.occurred_on, row.description.casefold(), row.amount_cents, row.kind)
+                if key in existing:
+                    errors.append(f"Line {row.line}: duplicate of an existing transaction")
+                    continue
+                category = names.get((row.category or "").casefold())
+                if category and category.kind != row.kind:
+                    category = None
+                category_id = (
+                    category.id if category else categorize(row.description, row.kind).category_id
+                )
+                transaction = Transaction(
+                    id=f"tx-{uuid4().hex[:12]}",
+                    description=row.description,
+                    category=self._category_name(category_id),
+                    account_id=account_id,
+                    category_id=category_id,
+                    amount_cents=row.amount_cents,
+                    kind=row.kind,
+                    occurred_on=row.occurred_on,
+                    auto_categorized=category is None and category_id is not None,
+                )
+                self._transactions[transaction.id] = transaction
+                existing.add(key)
+                imported += 1
+            return imported, errors
 
     def is_owner(self, user_id: str) -> bool:
         return user_id in self._owner_user_ids
@@ -728,6 +1293,8 @@ class DashboardStore:
 
     def dashboard_for_user(self, user_id: str, month: date | None = None) -> DashboardResponse:
         self.require_owner(user_id)
+        with self._lock:
+            self._auto_record_due_bills()
         if month and month_start(month) > self.active_month:
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_CONTENT, "That month is in the future"
@@ -791,13 +1358,20 @@ class DashboardStore:
     def create_transaction(self, user_id: str, request: TransactionWrite) -> DashboardResponse:
         with self._lock:
             self.require_owner(user_id)
-            self._validate_transaction_references(request.account_id, request.category_id)
+            self._validate_transaction_references(
+                request.account_id, request.category_id, request.kind
+            )
+            category_id = request.category_id
+            auto = category_id is None
+            if auto:
+                category_id = categorize(request.description, request.kind).category_id
             transaction = Transaction(
                 id=f"tx-{uuid4().hex[:12]}",
                 description=request.description,
-                category=self._category_name(request.category_id),
+                category=self._category_name(category_id),
                 account_id=request.account_id,
-                category_id=request.category_id,
+                category_id=category_id,
+                auto_categorized=auto and category_id is not None,
                 amount_cents=request.amount_cents,
                 kind=request.kind,
                 occurred_on=request.occurred_on,
@@ -815,7 +1389,9 @@ class DashboardStore:
             values = request.model_dump(exclude_unset=True)
             account_id = values.get("account_id", existing.account_id)
             category_id = values.get("category_id", existing.category_id)
-            self._validate_transaction_references(account_id, category_id)
+            self._validate_transaction_references(
+                account_id, category_id, values.get("kind", existing.kind)
+            )
             accounts_before = self._accounts.copy()
             try:
                 self._apply_account_effect(existing, -1)
@@ -917,11 +1493,18 @@ class DashboardStore:
     def _category_name(self, category_id: str | None) -> str:
         return self._category(category_id).name if category_id else "Uncategorized"
 
-    def _validate_transaction_references(self, account_id: str, category_id: str | None) -> None:
+    def _validate_transaction_references(
+        self, account_id: str, category_id: str | None, kind: str | None = None
+    ) -> None:
         if account_id not in self._accounts:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown account")
         if category_id:
-            self._category(category_id)
+            category = self._category(category_id)
+            if kind and category.kind != kind:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    f"“{category.name}” is a {category.kind} category",
+                )
 
     def _apply_account_effect(self, transaction: Transaction, multiplier: int) -> None:
         account = self._accounts[transaction.account_id]

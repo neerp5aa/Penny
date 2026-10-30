@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,23 +15,37 @@ from app.coach.models import (
 )
 from app.config import get_settings
 from app.dashboard_models import (
+    AccountPatch,
+    AccountWrite,
+    BillPatch,
+    BillWrite,
     BudgetCopyRequest,
     BudgetPatch,
     BudgetWrite,
+    CategorySuggestion,
+    CategoryWrite,
     CreditUtilizationRequest,
     CreditUtilizationResponse,
     DashboardResponse,
     GoalContributionRequest,
     GoalPatch,
     GoalWrite,
+    GrowthPoint,
+    GrowthRequest,
+    GrowthResponse,
     HistoryResponse,
+    ImportRequest,
+    ImportResult,
+    PaySchedule,
     TransactionPatch,
     TransactionWrite,
 )
 from app.dashboard_store import dashboard_store
+from app.domain.categorize import categorize, necessity
 from app.domain.finance import (
     COMMON_UTILIZATION_GUIDELINE_BASIS_POINTS,
     credit_utilization_basis_points,
+    growth_projection,
 )
 from app.models import CurrentUserResponse, HealthResponse
 
@@ -213,16 +227,81 @@ def complete_mission(
     )
 
 
-@app.post(
-    "/api/v1/upcoming-bills/{bill_id}/mark-paid",
-    response_model=DashboardResponse,
-    tags=["bills"],
-)
-def mark_upcoming_bill_paid(
+@app.post("/api/v1/bills", response_model=DashboardResponse, tags=["bills"])
+def create_bill(
+    request: BillWrite, current_user: AuthenticatedUser, month: ViewMonth = None
+) -> DashboardResponse:
+    return _in_view(dashboard_store.create_bill(current_user.id, request), current_user, month)
+
+
+@app.patch("/api/v1/bills/{bill_id}", response_model=DashboardResponse, tags=["bills"])
+def update_bill(
+    bill_id: str, request: BillPatch, current_user: AuthenticatedUser, month: ViewMonth = None
+) -> DashboardResponse:
+    return _in_view(
+        dashboard_store.update_bill(current_user.id, bill_id, request), current_user, month
+    )
+
+
+@app.delete("/api/v1/bills/{bill_id}", response_model=DashboardResponse, tags=["bills"])
+def delete_bill(
     bill_id: str, current_user: AuthenticatedUser, month: ViewMonth = None
 ) -> DashboardResponse:
-    """Record a user attestation only; this is not a verified bank payment."""
+    return _in_view(dashboard_store.delete_bill(current_user.id, bill_id), current_user, month)
+
+
+@app.post("/api/v1/bills/{bill_id}/mark-paid", response_model=DashboardResponse, tags=["bills"])
+def mark_bill_paid(
+    bill_id: str, current_user: AuthenticatedUser, month: ViewMonth = None
+) -> DashboardResponse:
+    """Record this payment as a transaction and move the bill to its next due date."""
     return _in_view(dashboard_store.mark_bill_paid(current_user.id, bill_id), current_user, month)
+
+
+@app.put("/api/v1/pay-schedule", response_model=DashboardResponse, tags=["pay cycle"])
+def set_pay_schedule(request: PaySchedule, current_user: AuthenticatedUser) -> DashboardResponse:
+    return dashboard_store.set_pay_schedule(current_user.id, request)
+
+
+@app.post("/api/v1/categories", response_model=DashboardResponse, tags=["categories"])
+def create_category(request: CategoryWrite, current_user: AuthenticatedUser) -> DashboardResponse:
+    return dashboard_store.create_category(current_user.id, request)
+
+
+@app.delete(
+    "/api/v1/categories/{category_id}", response_model=DashboardResponse, tags=["categories"]
+)
+def delete_category(category_id: str, current_user: AuthenticatedUser) -> DashboardResponse:
+    return dashboard_store.delete_category(current_user.id, category_id)
+
+
+@app.post("/api/v1/accounts", response_model=DashboardResponse, tags=["accounts"])
+def create_account(request: AccountWrite, current_user: AuthenticatedUser) -> DashboardResponse:
+    return dashboard_store.create_account(current_user.id, request)
+
+
+@app.patch("/api/v1/accounts/{account_id}", response_model=DashboardResponse, tags=["accounts"])
+def rename_account(
+    account_id: str, request: AccountPatch, current_user: AuthenticatedUser
+) -> DashboardResponse:
+    return dashboard_store.rename_account(current_user.id, account_id, request.name)
+
+
+@app.delete("/api/v1/accounts/{account_id}", response_model=DashboardResponse, tags=["accounts"])
+def delete_account(account_id: str, current_user: AuthenticatedUser) -> DashboardResponse:
+    return dashboard_store.delete_account(current_user.id, account_id)
+
+
+@app.post("/api/v1/transactions/import", response_model=ImportResult, tags=["transactions"])
+def import_transactions(request: ImportRequest, current_user: AuthenticatedUser) -> ImportResult:
+    """Add history from a CSV export. Imported rows don't change current account balances."""
+    imported, errors = dashboard_store.import_csv(current_user.id, request.csv, request.account_id)
+    return ImportResult(
+        imported=imported,
+        skipped=len(errors),
+        errors=errors[:20],
+        dashboard=dashboard_store.dashboard_for_user(current_user.id),
+    )
 
 
 @app.get("/api/v1/history", response_model=HistoryResponse, tags=["history"])
@@ -250,6 +329,50 @@ def calculate_credit_utilization(request: CreditUtilizationRequest) -> CreditUti
         credit_limit_cents=request.credit_limit_cents,
         utilization_basis_points=basis_points,
         within_common_guideline=basis_points <= COMMON_UTILIZATION_GUIDELINE_BASIS_POINTS,
+    )
+
+
+@app.get("/api/v1/categorize", response_model=CategorySuggestion, tags=["transactions"])
+def suggest_category(
+    current_user: AuthenticatedUser,
+    description: Annotated[str, Query(min_length=1, max_length=160)],
+    kind: Annotated[Literal["income", "spending"], Query()] = "spending",
+) -> CategorySuggestion:
+    """Rule-based category and need/want suggestion for a merchant description."""
+    dashboard_store.require_owner(current_user.id)
+    result = categorize(description, kind)
+    names = {c.id: c.name for c in dashboard_store.dashboard_for_user(current_user.id).categories}
+    return CategorySuggestion(
+        category_id=result.category_id,
+        category_name=names.get(result.category_id) if result.category_id else None,
+        necessity=necessity(description, result.category_id) if kind == "spending" else None,
+        matched=result.matched,
+    )
+
+
+@app.post(
+    "/api/v1/lessons/{lesson_id}/complete", response_model=DashboardResponse, tags=["learning"]
+)
+def complete_lesson(lesson_id: str, current_user: AuthenticatedUser) -> DashboardResponse:
+    """Record a passed lesson quiz. Idempotent, so XP is awarded once."""
+    return dashboard_store.complete_lesson(current_user.id, lesson_id)
+
+
+@app.post("/api/v1/calculations/growth", response_model=GrowthResponse, tags=["calculations"])
+def calculate_growth(request: GrowthRequest) -> GrowthResponse:
+    """Educational compounding illustration at an assumed rate. Not a forecast or advice."""
+    args = (request.initial_cents, request.monthly_cents, request.years)
+    with_fee = growth_projection(
+        *args, request.annual_return_basis_points, request.annual_fee_basis_points
+    )
+    without_fee = growth_projection(*args, request.annual_return_basis_points, 0)
+    _, contributed, balance = with_fee[-1]
+    return GrowthResponse(
+        points=[GrowthPoint(year=y, contributed_cents=c, balance_cents=b) for y, c, b in with_fee],
+        contributed_cents=contributed,
+        balance_cents=balance,
+        growth_cents=balance - contributed,
+        fees_cost_cents=without_fee[-1][2] - balance,
     )
 
 

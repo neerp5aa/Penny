@@ -1,7 +1,8 @@
 import type { Transaction } from "./api";
 import { centsToInput } from "./money";
 
-export type KindFilter = "all" | "income" | "spending";
+/** Money in/out, or spending that Penny labelled a need or a want. */
+export type KindFilter = "all" | "income" | "spending" | "need" | "want";
 /** "all", "uncategorized", or a category id. */
 export type CategoryFilter = string;
 export type TransactionFilters = { query: string; kind: KindFilter; category: CategoryFilter; from: string; to: string };
@@ -9,12 +10,14 @@ export type TransactionFilters = { query: string; kind: KindFilter; category: Ca
 export const EMPTY_FILTERS: TransactionFilters = { query: "", kind: "all", category: "all", from: "", to: "" };
 
 /** Client-side filtering over the already-loaded dashboard; it never changes amounts. */
-export function filterTransactions(transactions: readonly Transaction[], filters: TransactionFilters): Transaction[] {
+export function filterTransactions(transactions: readonly Transaction[], filters: TransactionFilters, parentOf: (categoryId: string) => string | null = () => null): Transaction[] {
   const query = filters.query.trim().toLocaleLowerCase("en-CA");
   return transactions.filter((item) => {
-    if (filters.kind !== "all" && item.kind !== filters.kind) return false;
+    if ((filters.kind === "income" || filters.kind === "spending") && item.kind !== filters.kind) return false;
+    if ((filters.kind === "need" || filters.kind === "want") && item.necessity !== filters.kind) return false;
     if (filters.category === "uncategorized" && item.category_id !== null) return false;
-    if (filters.category !== "all" && filters.category !== "uncategorized" && item.category_id !== filters.category) return false;
+    // Picking a parent category ("Food") also shows its subcategories ("Groceries").
+    if (filters.category !== "all" && filters.category !== "uncategorized" && item.category_id !== filters.category && (!item.category_id || parentOf(item.category_id) !== filters.category)) return false;
     if (filters.from && item.occurred_on < filters.from) return false;
     if (filters.to && item.occurred_on > filters.to) return false;
     return !query || item.description.toLocaleLowerCase("en-CA").includes(query);
@@ -45,11 +48,12 @@ function csvCell(value: string): string {
 
 /** CSV of transactions with signed CAD amounts written from integer cents (no floating point). */
 export function transactionsToCsv(transactions: readonly Transaction[], accountNames: ReadonlyMap<string, string>): string {
-  const header = ["Date", "Description", "Category", "Account", "Type", "Amount (CAD)"];
+  const header = ["Date", "Description", "Category", "Need or want", "Account", "Type", "Amount (CAD)"];
   const rows = transactions.map((item) => [
     item.occurred_on,
     item.description,
     item.category,
+    item.necessity ?? "",
     accountNames.get(item.account_id) ?? item.account_id,
     item.kind === "income" ? "Money in" : "Money out",
     `${item.kind === "income" ? "" : "-"}${centsToInput(String(item.amount_cents))}`,

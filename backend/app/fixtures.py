@@ -87,6 +87,63 @@ def build_demo_dashboard() -> DemoDashboardResponse:
             kind="spending",
             occurred_on=date(2026, 10, 17),
         ),
+        # Everyday purchases, so the daily calendar and coach have realistic texture.
+        Transaction(
+            id="tx-coffee-1",
+            description="Tim Hortons",
+            category="Food",
+            amount_cents=645,
+            kind="spending",
+            occurred_on=date(2026, 10, 5),
+        ),
+        Transaction(
+            id="tx-takeout-1",
+            description="Uber Eats",
+            category="Food",
+            amount_cents=2_890,
+            kind="spending",
+            occurred_on=date(2026, 10, 7),
+        ),
+        Transaction(
+            id="tx-coffee-2",
+            description="Starbucks",
+            category="Food",
+            amount_cents=725,
+            kind="spending",
+            occurred_on=date(2026, 10, 12),
+        ),
+        Transaction(
+            id="tx-ride",
+            description="Uber ride home",
+            category="Transportation",
+            amount_cents=1_840,
+            kind="spending",
+            occurred_on=date(2026, 10, 24),
+        ),
+        Transaction(
+            id="tx-takeout-2",
+            description="Pizza Pizza",
+            category="Food",
+            amount_cents=2_260,
+            kind="spending",
+            occurred_on=date(2026, 10, 27),
+        ),
+        Transaction(
+            id="tx-pharmacy",
+            description="Shoppers Drug Mart",
+            category="Health",
+            amount_cents=1_499,
+            kind="spending",
+            occurred_on=date(2026, 10, 28),
+        ),
+        Transaction(
+            id="tx-coffee-3",
+            description="Starbucks",
+            category="Food",
+            amount_cents=680,
+            kind="spending",
+            occurred_on=date(2026, 10, 29),
+        ),
     ]
     domain_transactions = [
         TransactionAmount(

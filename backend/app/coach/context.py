@@ -7,16 +7,17 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
-from app.coach.calculations import add_months, ceil_div, months_until
 from app.coach.facts import FactBook
 from app.coach.models import Proposal, Signal, ToolUse
 from app.dashboard_models import DashboardResponse, Goal, HistoryResponse, MonthlyBudget
 from app.dashboard_store import DashboardStore
-from app.domain.finance import COMMON_UTILIZATION_GUIDELINE_BASIS_POINTS
+from app.domain.finance import COMMON_UTILIZATION_GUIDELINE_BASIS_POINTS, add_months
 
 PRIOR_MONTHS = 3
 # A category is "running hot" when this month is at least 125% of its recent average.
 HOT_CATEGORY_BASIS_POINTS = 12_500
+# ...and at least this much above it, so small categories don't raise noise over a few dollars.
+HOT_CATEGORY_MIN_EXTRA_CENTS = 2_500
 BUDGET_WATCH_BASIS_POINTS = 8_500
 
 Tone = Literal["positive", "watch", "alert"]
@@ -45,11 +46,8 @@ class CoachContext:
 
     @property
     def unpaid_bills_cents(self) -> int:
-        return sum(
-            bill.amount_cents
-            for bill in self.dashboard.upcoming_bills
-            if bill.status == "scheduled"
-        )
+        """Scheduled bills due between today and the next payday."""
+        return self.dashboard.recurring.due_before_payday_cents
 
     @property
     def typical_surplus_cents(self) -> int:
@@ -99,11 +97,31 @@ def month_label(month: date) -> str:
     return month.strftime("%B %Y")
 
 
-def goal_monthly_needed(goal: Goal, from_month: date) -> int | None:
-    if goal.status != "active" or goal.target_date is None:
+def goal_monthly_needed(goal: Goal) -> int | None:
+    return goal.monthly_needed_cents if goal.status == "active" else None
+
+
+def pay_cycle_snapshot(ctx: CoachContext) -> dict[str, object] | None:
+    """Next payday and the lowest projected balance before it (bills only)."""
+    if not ctx.dashboard.pay_schedule:
         return None
-    remaining = max(0, goal.target_cents - goal.current_cents)
-    return ceil_div(remaining, months_until(from_month, goal.target_date))
+    f = ctx.facts
+    view = ctx.store.forecast(ctx.user_id, 0, "bills")
+    return {
+        "next_payday": view.next_payday.isoformat(),
+        "days_until_payday": view.days_until_payday,
+        "chequing_and_cash_at_cycle_start": f.money(
+            "Cash at start of pay cycle", view.starting_cents, "forecast"
+        ),
+        "lowest_projected_balance": f.money(
+            "Lowest balance before payday", view.lowest_cents, "forecast"
+        ),
+        "lowest_projected_day": view.lowest_day.isoformat(),
+        "projected_balance_day_before_payday": f.money(
+            "Balance the day before payday", view.ending_cents, "forecast"
+        ),
+        "note": "Projection subtracts scheduled bills only, not everyday spending.",
+    }
 
 
 def build_snapshot(ctx: CoachContext) -> dict[str, object]:
@@ -143,7 +161,7 @@ def build_snapshot(ctx: CoachContext) -> dict[str, object]:
         )
     goals = []
     for goal in d.savings_goals:
-        needed = goal_monthly_needed(goal, ctx.month)
+        needed = goal_monthly_needed(goal)
         goals.append(
             {
                 "id": goal.id,
@@ -221,29 +239,37 @@ def build_snapshot(ctx: CoachContext) -> dict[str, object]:
                 "Wants share of spending", d.spending_classification.wants_basis_points, "dashboard"
             ),
         },
-        "upcoming_bills": [
+        "scheduled_bills": [
             {
                 "name": bill.name,
                 "amount": f.money(bill.name, bill.amount_cents, "bills"),
-                "due": bill.due_on.isoformat(),
-                "status": bill.status,
+                "frequency": bill.frequency,
+                "next_due": bill.next_due.isoformat(),
+                "paid_automatically": bill.auto_record,
             }
-            for bill in d.upcoming_bills
+            for bill in d.bills
         ],
-        "unpaid_bills_total": f.money("Unpaid upcoming bills", ctx.unpaid_bills_cents, "bills"),
+        "bills_due_before_next_payday": f.money(
+            "Bills due before payday", ctx.unpaid_bills_cents, "bills"
+        ),
+        "pay_cycle": pay_cycle_snapshot(ctx),
         "savings_goals": goals,
-        "credit_card": {
-            "balance": f.money("Credit card balance", d.credit.balance_cents, "accounts"),
-            "limit": f.money("Credit limit", d.credit.credit_limit_cents, "accounts"),
-            "utilization": f.percent(
-                "Credit utilization", d.credit.utilization_basis_points, "accounts"
-            ),
-            "common_guideline": f.percent(
-                "Common utilization guideline",
-                COMMON_UTILIZATION_GUIDELINE_BASIS_POINTS,
-                "education",
-            ),
-        },
+        "credit_card": (
+            {
+                "balance": f.money("Credit card balance", d.credit.balance_cents, "accounts"),
+                "limit": f.money("Credit limit", d.credit.credit_limit_cents, "accounts"),
+                "utilization": f.percent(
+                    "Credit utilization", d.credit.utilization_basis_points, "accounts"
+                ),
+                "common_guideline": f.percent(
+                    "Common utilization guideline",
+                    COMMON_UTILIZATION_GUIDELINE_BASIS_POINTS,
+                    "education",
+                ),
+            }
+            if d.credit
+            else None
+        ),
         "net_worth": f.money("Net worth", d.net_worth.net_worth_cents, "accounts"),
         "financial_health_score": {
             "score_out_of_100": d.financial_health.score,
@@ -263,6 +289,31 @@ def build_snapshot(ctx: CoachContext) -> dict[str, object]:
             for t in d.transactions[:15]
         ],
         "goal_ids": [goal.id for goal in d.savings_goals],
+        "fixed_monthly_expenses": {
+            "total": f.money(
+                "Fixed monthly expenses", d.recurring.fixed_monthly_cents, "recurring"
+            ),
+            "items": [
+                {
+                    "name": item.name,
+                    "amount": f.money(item.name, item.amount_cents, "recurring"),
+                    "next_due": item.next_due.isoformat(),
+                    "type": item.kind,
+                    "need_or_want": item.necessity,
+                }
+                for item in d.recurring.items
+            ],
+        },
+        "daily_money_score": {
+            "today": d.money_calendar.today_score,
+            "zone": d.money_calendar.today_zone,
+            "green_streak_days": d.money_calendar.streaks.current_green,
+            "no_spend_days_this_month": d.money_calendar.streaks.no_spend_days,
+            "daily_flexible_allowance": f.money(
+                "Daily flexible allowance", d.money_calendar.daily_allowance_cents, "money_score"
+            ),
+            "how_it_works": d.money_calendar.methodology,
+        },
     }
 
 
@@ -295,6 +346,8 @@ def build_signals(ctx: CoachContext) -> list[Signal]:
             "What's the smartest thing to do with this month's surplus?",
         )
 
+    # Budgets that mostly hold a fixed bill (rent, phone plan) are expected to run near the limit.
+    fixed_categories = {item.category_name for item in d.recurring.items if item.category_name}
     for budget in d.budgets:
         name = budget.category_name
         if budget.remaining_cents < 0:
@@ -307,7 +360,11 @@ def build_signals(ctx: CoachContext) -> list[Signal]:
                 f"{over} past the {limit} limit.",
                 f"Why is my {name} spending over budget, and what can I change?",
             )
-        elif budget.limit_cents and budget.usage_basis_points >= BUDGET_WATCH_BASIS_POINTS:
+        elif (
+            budget.limit_cents
+            and budget.usage_basis_points >= BUDGET_WATCH_BASIS_POINTS
+            and name not in fixed_categories
+        ):
             used = f.percent(f"{name} budget used", budget.usage_basis_points, "budgets")
             left = f.money(f"{name} budget left", budget.remaining_cents, "budgets")
             add(
@@ -321,7 +378,11 @@ def build_signals(ctx: CoachContext) -> list[Signal]:
     for item in d.category_spending:
         name = item.category_name
         average = ctx.category_average_cents(name)
-        if average and item.spent_cents * 10_000 >= average * HOT_CATEGORY_BASIS_POINTS:
+        if (
+            average
+            and item.spent_cents * 10_000 >= average * HOT_CATEGORY_BASIS_POINTS
+            and item.spent_cents - average >= HOT_CATEGORY_MIN_EXTRA_CENTS
+        ):
             spent = f.money(f"{name} spent this month", item.spent_cents, "transactions")
             usual = f.money(f"{name} 3-month average", average, "history")
             add(
@@ -333,7 +394,7 @@ def build_signals(ctx: CoachContext) -> list[Signal]:
             )
 
     if ctx.unpaid_bills_cents:
-        bills = f.money("Unpaid upcoming bills", ctx.unpaid_bills_cents, "bills")
+        bills = f.money("Bills due before payday", ctx.unpaid_bills_cents, "bills")
         after_cents = ctx.account_total("chequing") - ctx.unpaid_bills_cents
         after = f.money("Chequing after bills", after_cents, "accounts")
         if after_cents < 0:
@@ -353,9 +414,23 @@ def build_signals(ctx: CoachContext) -> list[Signal]:
                 "Am I ready for next month's bills?",
             )
 
+    for item in d.recurring.items:
+        if 0 <= item.days_until_due <= 3:
+            amount = f.money(item.name, item.amount_cents, "recurring")
+            when = "today" if item.days_until_due == 0 else f"in {item.days_until_due} days"
+            if item.days_until_due == 1:
+                when = "tomorrow"
+            add(
+                f"due-{item.id}",
+                "watch",
+                f"{item.name} is due {when}",
+                f"{amount} comes out on {item.next_due.strftime('%B %-d')}.",
+                f"Am I ready for my {item.name} payment?",
+            )
+
     surplus_cents = ctx.typical_surplus_cents
     for goal in d.savings_goals:
-        needed_cents = goal_monthly_needed(goal, ctx.month)
+        needed_cents = goal_monthly_needed(goal)
         if not needed_cents or goal.target_date is None:
             continue
         needed = f.money(f"Monthly saving needed for {goal.name}", needed_cents, "goals")
@@ -379,7 +454,7 @@ def build_signals(ctx: CoachContext) -> list[Signal]:
                 f"Should I set up a monthly contribution to my {goal.name}?",
             )
 
-    if d.credit.utilization_basis_points > COMMON_UTILIZATION_GUIDELINE_BASIS_POINTS:
+    if d.credit and d.credit.utilization_basis_points > COMMON_UTILIZATION_GUIDELINE_BASIS_POINTS:
         used = f.percent("Credit utilization", d.credit.utilization_basis_points, "accounts")
         guideline = f.percent(
             "Common utilization guideline", COMMON_UTILIZATION_GUIDELINE_BASIS_POINTS, "education"

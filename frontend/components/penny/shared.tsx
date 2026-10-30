@@ -1,23 +1,24 @@
 "use client";
 
 import { useId } from "react";
-import { Bot, ChartColumn, CreditCard, GraduationCap, Home, ReceiptText, Settings, Target, type LucideIcon } from "lucide-react";
+import { Bot, GraduationCap, Home, ReceiptText, Repeat, Settings, Target, TrendingUp, type LucideIcon } from "lucide-react";
 import { Label } from "@/components/ui/input";
 import { ApiError } from "@/lib/api";
 import { formatCad } from "@/lib/money";
 import { cn } from "@/lib/utils";
 
-export type View = "overview" | "transactions" | "insights" | "goals" | "ai" | "learning" | "credit" | "settings";
+export type View = "today" | "spending" | "recurring" | "goals" | "invest" | "learn" | "ai" | "settings";
 
-export const NAVIGATION: { id: View; label: string; title: string; description: string; icon: LucideIcon }[] = [
-  { id: "overview", label: "Overview", title: "Overview", description: "Your financial position today.", icon: Home },
-  { id: "transactions", label: "Transactions", title: "Transactions", description: "Search, inspect, and manage money in and out.", icon: ReceiptText },
-  { id: "insights", label: "Insights", title: "Insights", description: "Trends and explanations grounded in your data.", icon: ChartColumn },
-  { id: "goals", label: "Goals", title: "Financial goals", description: "Track progress and make intentional contributions.", icon: Target },
-  { id: "ai", label: "Penny AI", title: "Penny AI", description: "Your money coach. It knows your numbers and helps you decide.", icon: Bot },
-  { id: "learning", label: "Learning", title: "Learning", description: "Build practical financial knowledge a little at a time.", icon: GraduationCap },
-  { id: "credit", label: "Credit Coach", title: "Credit Coach · Beta", description: "Educational Canadian credit guidance.", icon: CreditCard },
-  { id: "settings", label: "Settings", title: "Settings", description: "Display and notification preferences.", icon: Settings },
+/** `primary` items sit in the phone tab bar; the rest live under "More". */
+export const NAVIGATION: { id: View; label: string; title: string; description: string; icon: LucideIcon; primary: boolean }[] = [
+  { id: "today", label: "Today", title: "Today", description: "Your Money Score, streaks, and what’s coming up.", icon: Home, primary: true },
+  { id: "spending", label: "Spending", title: "Spending", description: "Budgets, transactions, and where your money goes.", icon: ReceiptText, primary: true },
+  { id: "recurring", label: "Recurring", title: "Recurring", description: "Every bill and subscription, and what’s due next.", icon: Repeat, primary: false },
+  { id: "goals", label: "Goals", title: "Goals", description: "Save on purpose and see what it takes each month.", icon: Target, primary: true },
+  { id: "invest", label: "Invest", title: "Invest", description: "Learn how investing works in Canada, at your own pace.", icon: TrendingUp, primary: false },
+  { id: "learn", label: "Learn", title: "Learn", description: "Bite-sized lessons on budgeting, saving, tax, and credit.", icon: GraduationCap, primary: false },
+  { id: "ai", label: "Penny AI", title: "Penny AI", description: "Your money coach. It knows your numbers and helps you decide.", icon: Bot, primary: true },
+  { id: "settings", label: "Settings", title: "Settings", description: "Appearance, reminders, and how your data is protected.", icon: Settings, primary: false },
 ];
 
 /** Formats integer cents from the API. Display only; never feed the result back into maths. */
@@ -79,4 +80,11 @@ export function SectionHeading({ eyebrow, title, description, action, id }: { ey
 /** Staggered entrance; delay is capped so content never waits on decoration. */
 export function enterStyle(index: number): React.CSSProperties {
   return { animationDelay: `${Math.min(index, 6) * 40}ms` };
+}
+
+/** "Due today", "Due tomorrow", "Due in 5 days", or "Overdue". */
+export function dueLabel(days: number): string {
+  if (days < 0) return "Overdue";
+  if (days === 0) return "Due today";
+  return days === 1 ? "Due tomorrow" : `Due in ${days} days`;
 }

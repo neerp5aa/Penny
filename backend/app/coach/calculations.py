@@ -4,23 +4,13 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
-from app.domain.finance import BASIS_POINTS, COMMON_UTILIZATION_GUIDELINE_BASIS_POINTS
-
-
-def ceil_div(numerator: int, denominator: int) -> int:
-    if denominator <= 0:
-        raise ValueError("denominator must be positive")
-    return -(-numerator // denominator)
-
-
-def add_months(month: date, count: int) -> date:
-    index = month.year * 12 + month.month - 1 + count
-    return date(index // 12, index % 12 + 1, 1)
-
-
-def months_until(from_month: date, target: date) -> int:
-    """Monthly contributions left before `target`, counting the target's own month."""
-    return max(1, (target.year - from_month.year) * 12 + target.month - from_month.month)
+from app.domain.finance import (
+    BASIS_POINTS,
+    COMMON_UTILIZATION_GUIDELINE_BASIS_POINTS,
+    add_months,
+    ceil_div,
+    months_until,
+)
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,17 +1,40 @@
 import { getSupabaseAccessToken } from "./supabase";
 
-export type Account = { id: string; name: string; account_type: "chequing" | "savings" | "credit"; balance_cents: number; credit_limit_cents: number | null };
-export type Category = { id: string; name: string; colour_token: string };
-export type Transaction = { id: string; description: string; category: string; account_id: string; category_id: string | null; amount_cents: number; kind: "income" | "spending"; occurred_on: string };
-export type Budget = { id: string; category_id: string; category_name: string; month_start: string; limit_cents: number; spent_cents: number; remaining_cents: number; usage_basis_points: number };
-export type SavingsGoal = { id: string; name: string; target_cents: number; current_cents: number; target_date: string | null; status: "active" | "completed" | "paused"; progress_basis_points: number };
+export type AccountType = "chequing" | "savings" | "credit" | "cash" | "investment" | "other";
+export type Account = { id: string; name: string; account_type: AccountType; balance_cents: number; credit_limit_cents: number | null };
+export type Category = { id: string; name: string; colour_token: string; kind: "income" | "spending"; parent_id: string | null; custom: boolean };
+export type Transaction = { id: string; description: string; category: string; account_id: string; category_id: string | null; amount_cents: number; kind: "income" | "spending"; occurred_on: string; necessity: "need" | "want" | null; auto_categorized: boolean };
+export type Budget = { id: string; category_id: string; category_name: string; month_start: string; limit_cents: number; spent_cents: number; remaining_cents: number; usage_basis_points: number; carried_over: boolean };
+export type SavingsGoal = { id: string; name: string; target_cents: number; current_cents: number; target_date: string | null; status: "active" | "completed" | "paused"; progress_basis_points: number; monthly_needed_cents: number | null };
 export type Mission = { id: string; title: string; description: string; xp_reward: number; completed: boolean };
 export type CategorySpending = { category_id: string | null; category_name: string; colour_token: string; spent_cents: number; share_basis_points: number };
-export type DailySpending = { day: string; spent_cents: number; cumulative_cents: number };
 export type FinancialHealthFactor = { id: string; label: string; score: number; max_score: number; explanation: string };
-export type FinancialHealth = { score: number; weekly_change: number | null; factors: FinancialHealthFactor[]; methodology: string; limitations: string[] };
-export type FinancialInsight = { id: string; headline: string; explanation: string; action_label: string | null; destination: "budget" | "transactions" | "goals" | "ai" | "credit"; source: string };
-export type UpcomingBill = { id: string; name: string; amount_cents: number; due_on: string; status: "scheduled" | "paid"; payment_source: "user_marked" | "not_verified" };
+export type MonthPoint = { month: string; value: number };
+export type FinancialHealth = { score: number; history: MonthPoint[]; factors: FinancialHealthFactor[]; methodology: string; limitations: string[] };
+export type Zone = "green" | "yellow" | "red";
+export type MoneyDay = { day: string; future: boolean; score: number | null; zone: Zone | null; pace_points: number | null; day_points: number | null; flexible_spent_cents: number; total_spent_cents: number; income_cents: number; transaction_count: number; due: string[] };
+export type MoneyCalendar = {
+  month: string;
+  today: string | null;
+  today_score: number | null;
+  today_zone: Zone | null;
+  flexible_budget_cents: number;
+  daily_allowance_cents: number;
+  days: MoneyDay[];
+  streaks: { current_green: number; best_green: number; no_spend_days: number; green_days: number; scored_days: number };
+  methodology: string;
+};
+export type BillFrequency = "weekly" | "biweekly" | "monthly" | "yearly";
+export type Bill = { id: string; name: string; amount_cents: number; category_id: string | null; account_id: string; frequency: BillFrequency; next_due: string; auto_record: boolean; last_paid_on: string | null };
+export type PayFrequency = "weekly" | "biweekly" | "semimonthly" | "monthly" | "custom";
+export type PaySchedule = { name: string; amount_cents: number; account_id: string; frequency: PayFrequency; next_payday: string; interval_days: number | null };
+export type RecurringExpense = { id: string; name: string; category_name: string | null; amount_cents: number; monthly_cents: number; frequency: BillFrequency; next_due: string; days_until_due: number; kind: "bill" | "subscription"; necessity: "need" | "want"; auto_record: boolean };
+export type RecurringSuggestion = { name: string; category_id: string | null; amount_cents: number; next_due: string };
+export type RecurringSummary = { items: RecurringExpense[]; suggestions: RecurringSuggestion[]; fixed_monthly_cents: number; needs_monthly_cents: number; wants_monthly_cents: number; due_next_7_days_cents: number; due_before_payday_cents: number; share_of_income_basis_points: number | null; methodology: string };
+export type LessonTrack = "budgeting" | "saving" | "tax" | "credit" | "investing";
+export type Lesson = { id: string; track: LessonTrack; title: string; xp_reward: number; completed: boolean };
+export type LearningProgress = { xp_total: number; level: number; level_xp: number; level_size_xp: number; streak_days: number; completed_today: boolean; week_activity: boolean[]; next_lesson: Lesson | null; lessons: Lesson[] };
+export type FoundationCheck = { id: string; title: string; status: "met" | "in_progress" | "not_met"; detail: string };
 export type Dashboard = {
   active_month: string;
   current_month: string;
@@ -25,14 +48,16 @@ export type Dashboard = {
   missions: Mission[];
   xp_total: number;
   category_spending: CategorySpending[];
-  daily_spending: DailySpending[];
-  credit: { account_id: string; account_name: string; balance_cents: number; credit_limit_cents: number; utilization_basis_points: number };
-  investment_data: { available: false; title: string; explanation: string };
-  credit_score_data: { available: false; title: string; explanation: string };
+  credit: { account_id: string; account_name: string; balance_cents: number; credit_limit_cents: number; utilization_basis_points: number } | null;
   financial_health: FinancialHealth;
-  insights: FinancialInsight[];
+  money_calendar: MoneyCalendar;
+  recurring: RecurringSummary;
+  learning: LearningProgress;
+  investing_foundations: FoundationCheck[];
   spending_classification: { needs_cents: number; wants_cents: number; needs_basis_points: number; wants_basis_points: number };
-  upcoming_bills: UpcomingBill[];
+  bills: Bill[];
+  pay_schedule: PaySchedule | null;
+  home: { available_cents: number; cash_cents: number; cash_history: MonthPoint[]; cash_change_basis_points: number | null; savings_cents: number; savings_history: MonthPoint[]; monthly_saved_cents: number; monthly_goal_cents: number; spending_change_basis_points: number | null; weekly_flexible_cents: number };
   net_worth: { cash_cents: number; savings_cents: number; investments_cents: number | null; liabilities_cents: number; net_worth_cents: number };
   previous_month_cash_flow_cents: number | null;
   spending_power_cents: number;
@@ -48,9 +73,11 @@ export type History = {
   categories: CategorySpending[];
   data_months: string[];
 };
+export type Growth = { points: { year: number; contributed_cents: number; balance_cents: number }[]; contributed_cents: number; balance_cents: number; growth_cents: number; fees_cost_cents: number };
+export type CategorySuggestion = { category_id: string | null; category_name: string | null; necessity: "need" | "want" | null; matched: string | null };
 export type CreditUtilization = { balance_cents: number; credit_limit_cents: number; utilization_basis_points: number; within_common_guideline: boolean };
 
-export type TransactionWrite = Omit<Transaction, "id" | "category">;
+export type TransactionWrite = Omit<Transaction, "id" | "category" | "necessity" | "auto_categorized">;
 export type GoalWrite = Pick<SavingsGoal, "name" | "target_cents" | "current_cents" | "target_date">;
 export type CoachRole = "user" | "assistant";
 export type CoachFact = { label: string; display: string; cents: number | null; basis_points: number | null; source: string };
@@ -141,7 +168,19 @@ export const dashboardApi = {
   deleteGoal: (id: string, month?: string) => request(inMonth(`/api/v1/savings-goals/${id}`, month), { method: "DELETE" }),
   contributeToGoal: (id: string, amount_cents: number, month?: string) => request(inMonth(`/api/v1/savings-goals/${id}/contributions`, month), { method: "POST", body: JSON.stringify({ amount_cents }) }),
   completeMission: (id: string, month?: string) => request(inMonth(`/api/v1/missions/${id}/complete`, month), { method: "POST" }),
-  markBillPaid: (id: string, month?: string) => request(inMonth(`/api/v1/upcoming-bills/${id}/mark-paid`, month), { method: "POST" }),
+  markBillPaid: (id: string, month?: string) => request(inMonth(`/api/v1/bills/${id}/mark-paid`, month), { method: "POST" }),
+  createBill: (body: Omit<Bill, "id" | "last_paid_on">, month?: string) => request(inMonth("/api/v1/bills", month), { method: "POST", body: JSON.stringify(body) }),
+  updateBill: (id: string, body: Partial<Omit<Bill, "id" | "last_paid_on">>, month?: string) => request(inMonth(`/api/v1/bills/${id}`, month), { method: "PATCH", body: JSON.stringify(body) }),
+  deleteBill: (id: string, month?: string) => request(inMonth(`/api/v1/bills/${id}`, month), { method: "DELETE" }),
+  setPaySchedule: (body: PaySchedule) => request("/api/v1/pay-schedule", { method: "PUT", body: JSON.stringify(body) }),
+  createCategory: (body: { name: string; kind: Category["kind"]; parent_id: string | null }) => request("/api/v1/categories", { method: "POST", body: JSON.stringify(body) }),
+  deleteCategory: (id: string) => request(`/api/v1/categories/${id}`, { method: "DELETE" }),
+  createAccount: (body: { name: string; account_type: AccountType; balance_cents: number; credit_limit_cents: number | null }) => request("/api/v1/accounts", { method: "POST", body: JSON.stringify(body) }),
+  renameAccount: (id: string, name: string) => request(`/api/v1/accounts/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  deleteAccount: (id: string) => request(`/api/v1/accounts/${id}`, { method: "DELETE" }),
+  importCsv: (csv: string, account_id: string) => authorizedRequest<{ imported: number; skipped: number; errors: string[]; dashboard: Dashboard }>("/api/v1/transactions/import", { method: "POST", body: JSON.stringify({ csv, account_id }) }),
+  completeLesson: (id: string) => request(`/api/v1/lessons/${id}/complete`, { method: "POST" }),
+  suggestCategory: (description: string, kind: Transaction["kind"]) => authorizedRequest<CategorySuggestion>(`/api/v1/categorize?description=${encodeURIComponent(description)}&kind=${kind}`),
 };
 
 export const historyApi = {
@@ -149,6 +188,7 @@ export const historyApi = {
 };
 
 export const calculationsApi = {
+  growth: (body: { initial_cents: number; monthly_cents: number; years: number; annual_return_basis_points: number; annual_fee_basis_points: number }) => authorizedRequest<Growth>("/api/v1/calculations/growth", { method: "POST", body: JSON.stringify(body) }),
   creditUtilization: (balance_cents: number, credit_limit_cents: number) => authorizedRequest<CreditUtilization>("/api/v1/calculations/credit-utilization", { method: "POST", body: JSON.stringify({ balance_cents, credit_limit_cents }) }),
 };
 

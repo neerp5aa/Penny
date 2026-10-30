@@ -1,5 +1,6 @@
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import date
 from enum import StrEnum
 
 
@@ -107,3 +108,57 @@ def average_cents(total_cents: int, count: int) -> int:
     if isinstance(count, bool) or not isinstance(count, int) or count < 0:
         raise ValueError("count must be a non-negative integer")
     return total_cents // count if count else 0
+
+
+MAX_PROJECTION_YEARS = 50
+
+
+def growth_projection(
+    initial_cents: int,
+    monthly_cents: int,
+    years: int,
+    annual_return_basis_points: int,
+    annual_fee_basis_points: int,
+) -> list[tuple[int, int, int]]:
+    """Illustrative month-end compounding: (year, total contributed, balance) for each year.
+
+    The net monthly rate is (return - fee) / 12 and growth is floored to whole cents each
+    month. This illustrates compounding with an assumed rate; it is not a forecast.
+    """
+    _require_non_negative_cents(initial_cents, "initial_cents")
+    _require_non_negative_cents(monthly_cents, "monthly_cents")
+    if not 1 <= years <= MAX_PROJECTION_YEARS:
+        raise ValueError(f"years must be between 1 and {MAX_PROJECTION_YEARS}")
+    if not 0 <= annual_return_basis_points <= 2_000 or not 0 <= annual_fee_basis_points <= 500:
+        raise ValueError("return must be 0-20% and fee 0-5%")
+    net = annual_return_basis_points - annual_fee_basis_points
+    balance = contributed = initial_cents
+    points = [(0, contributed, balance)]
+    for month in range(1, years * 12 + 1):
+        balance += balance * net // (12 * BASIS_POINTS) + monthly_cents
+        contributed += monthly_cents
+        if month % 12 == 0:
+            points.append((month // 12, contributed, balance))
+    return points
+
+
+def ceil_div(numerator: int, denominator: int) -> int:
+    if denominator <= 0:
+        raise ValueError("denominator must be positive")
+    return -(-numerator // denominator)
+
+
+def add_months(month: date, count: int) -> date:
+    index = month.year * 12 + month.month - 1 + count
+    return date(index // 12, index % 12 + 1, 1)
+
+
+def months_until(from_month: date, target: date) -> int:
+    """Monthly contributions left before `target`, counting the target's own month."""
+    return max(1, (target.year - from_month.year) * 12 + target.month - from_month.month)
+
+
+def format_cad(cents: int) -> str:
+    sign = "-" if cents < 0 else ""
+    dollars, remainder = divmod(abs(cents), 100)
+    return f"{sign}${dollars:,}.{remainder:02d}"
