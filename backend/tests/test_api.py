@@ -1,8 +1,10 @@
 from fastapi.testclient import TestClient
 
 from app.main import app
+from tests.conftest import DEMO_TOKEN
 
 client = TestClient(app)
+auth_headers = {"Authorization": f"Bearer {DEMO_TOKEN}"}
 
 
 def test_health_check() -> None:
@@ -16,7 +18,7 @@ def test_health_check() -> None:
 
 
 def test_demo_dashboard_is_fictional_and_deterministic() -> None:
-    response = client.get("/api/v1/demo/dashboard")
+    response = client.get("/api/v1/demo/dashboard", headers=auth_headers)
     assert response.status_code == 200
     payload = response.json()
     assert payload["profile"]["is_fictional"] is True

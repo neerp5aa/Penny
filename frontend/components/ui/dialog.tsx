@@ -9,13 +9,23 @@ export const Dialog = DialogPrimitive.Root;
 export const DialogTrigger = DialogPrimitive.Trigger;
 export const DialogClose = DialogPrimitive.Close;
 
+/** Bottom sheet on phones, centred modal from the sm breakpoint. Scrolls internally if tall. */
 export function DialogContent({ className, children, ...props }: React.ComponentProps<typeof DialogPrimitive.Content>) {
   return (
     <DialogPrimitive.Portal>
-      <DialogPrimitive.Overlay className="fixed inset-0 z-40 bg-slate-950/45 backdrop-blur-[2px]" />
-      <DialogPrimitive.Content className={cn("fixed inset-x-3 bottom-3 z-50 max-h-[calc(100vh-1.5rem)] overflow-y-auto rounded-3xl bg-white p-5 shadow-2xl sm:left-1/2 sm:top-1/2 sm:bottom-auto sm:max-w-lg sm:-translate-x-1/2 sm:-translate-y-1/2 sm:p-6", className)} {...props}>
+      <DialogPrimitive.Overlay className="dialog-overlay fixed inset-0 z-40" />
+      <DialogPrimitive.Content
+        className={cn(
+          "dialog-content fixed inset-x-0 bottom-0 z-50 max-h-[calc(100dvh-1rem)] overflow-y-auto overscroll-contain rounded-t-[1.5rem] bg-surface p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-[var(--shadow-raised)] focus:outline-none sm:inset-x-auto sm:bottom-auto sm:left-1/2 sm:top-1/2 sm:w-[calc(100%-2rem)] sm:max-w-lg sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-[1.5rem] sm:p-6",
+          className,
+        )}
+        {...props}
+      >
+        <div aria-hidden="true" className="mx-auto -mt-1 mb-3 h-1 w-10 rounded-full bg-line-strong sm:hidden" />
         {children}
-        <DialogPrimitive.Close aria-label="Close dialog" className="absolute right-4 top-4 grid size-10 place-items-center rounded-full text-slate-500 hover:bg-slate-100"><X className="size-5" /></DialogPrimitive.Close>
+        <DialogPrimitive.Close aria-label="Close" className="absolute right-3 top-3 grid size-11 place-items-center rounded-full text-ink-subtle transition-colors hover:bg-sage-soft hover:text-ink sm:right-4 sm:top-4">
+          <X className="size-5" />
+        </DialogPrimitive.Close>
       </DialogPrimitive.Content>
     </DialogPrimitive.Portal>
   );
@@ -25,8 +35,8 @@ export function DialogHeader({ className, ...props }: React.ComponentProps<"div"
   return <div className={cn("mb-5 pr-10", className)} {...props} />;
 }
 export function DialogTitle({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Title>) {
-  return <DialogPrimitive.Title className={cn("text-xl font-black tracking-tight", className)} {...props} />;
+  return <DialogPrimitive.Title className={cn("text-xl font-semibold tracking-tight text-ink", className)} {...props} />;
 }
 export function DialogDescription({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Description>) {
-  return <DialogPrimitive.Description className={cn("mt-1 text-sm text-slate-600", className)} {...props} />;
+  return <DialogPrimitive.Description className={cn("mt-1 text-sm text-ink-subtle", className)} {...props} />;
 }

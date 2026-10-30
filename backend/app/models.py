@@ -14,6 +14,13 @@ class HealthResponse(StrictModel):
     version: str
 
 
+class CurrentUserResponse(StrictModel):
+    user_id: str
+    email: str | None
+    auth_method: Literal["supabase", "demo"]
+    has_demo_financial_data: bool
+
+
 class DemoUser(StrictModel):
     id: str
     display_name: str

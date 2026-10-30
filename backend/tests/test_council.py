@@ -19,9 +19,10 @@ from app.council.tools import (
 from app.dashboard_models import GoalPatch
 from app.dashboard_store import DashboardStore, dashboard_store
 from app.main import app
+from tests.conftest import DEMO_TOKEN
 
 client = TestClient(app)
-auth_headers = {"Authorization": "Bearer penny-local-demo-token"}
+auth_headers = {"Authorization": f"Bearer {DEMO_TOKEN}"}
 
 
 class FailingExplainer:
@@ -45,7 +46,7 @@ def laptop_request() -> CouncilRequest:
 
 def test_council_tools_are_deterministic_and_verified() -> None:
     store = DashboardStore()
-    context = store.dashboard()
+    context = store.dashboard_for_user("demo-maya-singh")
     summary = get_budget_summary(context)
     goal = store.goal_for_user("demo-maya-singh", "goal-laptop")
     affordability = calculate_affordability(summary, 120_000)
@@ -145,7 +146,7 @@ def test_goal_change_requires_owner_approval_and_cannot_replay() -> None:
     try:
         assert client.post(endpoint, json=body).status_code == 403
     finally:
-        app.dependency_overrides.clear()
+        app.dependency_overrides.pop(get_current_user, None)
 
     applied = client.post(endpoint, headers=auth_headers, json=body)
     assert applied.status_code == 200
@@ -159,4 +160,6 @@ def test_goal_change_requires_owner_approval_and_cannot_replay() -> None:
     )
     assert client.post(endpoint, headers=auth_headers, json=body).status_code == 409
 
-    dashboard_store.update_goal("goal-laptop", GoalPatch(current_cents=30_000, status="active"))
+    dashboard_store.update_goal(
+        "demo-maya-singh", "goal-laptop", GoalPatch(current_cents=30_000, status="active")
+    )

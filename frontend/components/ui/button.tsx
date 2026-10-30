@@ -2,20 +2,21 @@ import * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
-const buttonVariants = cva(
-  "inline-flex min-h-11 items-center justify-center gap-2 rounded-xl px-4 text-sm font-bold transition-colors disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 focus-visible:ring-offset-2",
+export const buttonVariants = cva(
+  "inline-flex min-h-11 select-none items-center whitespace-nowrap justify-center gap-2 rounded-xl px-4 text-sm font-semibold transition-[background-color,color,box-shadow,transform] duration-150 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas",
   {
     variants: {
       variant: {
-        default: "bg-emerald-700 text-white hover:bg-emerald-800",
-        secondary: "bg-emerald-50 text-emerald-800 hover:bg-emerald-100",
-        outline: "border border-slate-300 bg-white text-slate-800 hover:bg-slate-50",
-        ghost: "text-slate-600 hover:bg-slate-100 hover:text-slate-900",
-        destructive: "bg-rose-50 text-rose-700 hover:bg-rose-100",
+        default: "bg-primary text-on-primary shadow-sm hover:bg-primary-hover",
+        secondary: "bg-accent-soft text-accent-strong hover:bg-primary-soft",
+        outline: "border border-line-strong bg-surface text-ink hover:bg-sage-soft",
+        ghost: "text-ink-muted hover:bg-sage-soft hover:text-ink",
+        destructive: "bg-danger text-on-danger hover:bg-danger-hover",
+        "destructive-soft": "bg-danger-soft text-danger hover:bg-danger-soft-hover",
       },
       size: {
         default: "min-h-11",
-        sm: "min-h-9 rounded-lg px-3 text-xs",
+        sm: "min-h-10 rounded-lg px-3 text-sm",
         icon: "size-11 p-0",
       },
     },

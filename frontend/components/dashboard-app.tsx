@@ -1,134 +1,397 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { ArrowDownLeft, ArrowRight, ArrowUpRight, BookOpen, Bot, Check, CircleDollarSign, CreditCard, GraduationCap, Home, Landmark, LayoutDashboard, Lightbulb, Pencil, PiggyBank, Plus, ReceiptText, RefreshCw, ShieldCheck, Sparkles, Target, Trash2, TrendingDown, TrendingUp, WalletCards, X } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input, Label } from "@/components/ui/input";
-import { Progress } from "@/components/ui/progress";
-import { type Budget, type CouncilResponse, type Dashboard, councilApi, dashboardApi, type SavingsGoal, type Transaction } from "@/lib/api";
-import { centsToInput, formatCad, parseCadToCents } from "@/lib/money";
-
-type View = "home" | "budget" | "council" | "learn" | "credit";
-const navigation: { id: View; label: string; icon: typeof Home }[] = [
-  { id: "home", label: "Home", icon: Home }, { id: "budget", label: "Budget", icon: ReceiptText },
-  { id: "council", label: "Council", icon: Sparkles }, { id: "learn", label: "Learn", icon: GraduationCap },
-  { id: "credit", label: "Credit", icon: CreditCard },
-];
-const colours: Record<string, string> = { emerald: "bg-emerald-500", rose: "bg-rose-400", amber: "bg-amber-400", sky: "bg-sky-500", violet: "bg-violet-500", indigo: "bg-indigo-500", pink: "bg-pink-500", slate: "bg-slate-400" };
+import { useCallback, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
+import Link from "next/link";
+import { CloudOff, LogIn, RefreshCw } from "lucide-react";
+import { DisplaySettingsDialog, MobileAccount, MobileNavigation, PageHeader, Sidebar } from "@/components/penny/app-shell";
+import { BudgetView } from "@/components/penny/budget-view";
+import { CouncilView } from "@/components/penny/council-view";
+import { AddMoneyDialog, BudgetDialog, ConfirmDialog, type ConfirmRequest, GoalDialog, TransactionDialog } from "@/components/penny/dialogs";
+import { HomeView } from "@/components/penny/home-view";
+import { InsightsView } from "@/components/penny/insights-view";
+import { CreditView, LearnView } from "@/components/penny/learn-credit-views";
+import { usePreferences } from "@/components/penny/preferences";
+import { cad, describeError, NAVIGATION, type View } from "@/components/penny/shared";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { ToastProvider, useToast } from "@/components/ui/toast";
+import { type Budget, type Dashboard, dashboardApi, type Mission, type SavingsGoal, type Transaction } from "@/lib/api";
+import { addMonths, formatMonth } from "@/lib/format";
 
 export function DashboardApp() {
+  return <ToastProvider><PennyApp /></ToastProvider>;
+}
+
+const isView = (value: string): value is View => NAVIGATION.some((item) => item.id === value);
+/** True when keys should go to a form field. A field inside a dialog that is closing doesn't count. */
+const isTyping = (target: EventTarget | null) =>
+  target instanceof HTMLElement &&
+  !target.closest("[role=dialog][data-state=closed]") &&
+  (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
+
+/** Runs a UI update inside a view transition where supported (and motion is allowed). */
+function withViewTransition(update: () => void) {
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reduce || !("startViewTransition" in document)) { update(); return; }
+  document.startViewTransition(() => flushSync(update));
+}
+
+/** Single-key shortcuts, ignored while typing in a field or while a dialog is open. */
+function useKeyboardShortcuts(shortcuts: Record<string, () => void>) {
+  const latest = useRef(shortcuts);
+  useEffect(() => { latest.current = shortcuts; });
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.metaKey || event.ctrlKey || event.altKey || isTyping(event.target)) return;
+      if (document.querySelector("[role=dialog][data-state=open]")) return;
+      const run = latest.current[event.key.toLowerCase()];
+      if (!run) return;
+      event.preventDefault();
+      run();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+}
+
+type ToastMessage = { title: string; description?: string; action?: { label: string; onClick: () => void } };
+type Undo = { label: string; run: () => Promise<Dashboard>; done: string };
+/** Runs an API mutation, shows a success toast, and resolves to an error message (or null). */
+type Mutate = (action: () => Promise<Dashboard>, success: string | ((data: Dashboard) => ToastMessage), undo?: Undo) => Promise<string | null>;
+
+/** A confirmed delete whose toast offers Undo by re-creating the record. */
+function deleteConfirmation(mutate: Mutate, options: { title: string; description: string; confirmLabel: string; remove: () => Promise<Dashboard>; restore: () => Promise<Dashboard>; noun: string }): ConfirmRequest {
+  return {
+    title: options.title,
+    description: `${options.description} You can undo this right after.`,
+    confirmLabel: options.confirmLabel,
+    onConfirm: () => mutate(options.remove, `${options.noun} deleted`, { label: "Undo", run: options.restore, done: `${options.noun} restored` }),
+  };
+}
+
+function PennyApp() {
+  const toast = useToast();
+  const { density, resolvedTheme, setTheme } = usePreferences();
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [view, setView] = useState<View>("home");
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const [transactionDialog, setTransactionDialog] = useState<Transaction | "new" | null>(null);
-  const [budgetDialog, setBudgetDialog] = useState<Budget | "new" | null>(null);
-  const [goalDialog, setGoalDialog] = useState<SavingsGoal | "new" | null>(null);
+  const [monthLoading, setMonthLoading] = useState(false);
+  const [historyVersion, setHistoryVersion] = useState(0);
+  const [loadError, setLoadError] = useState<ReturnType<typeof describeError> | null>(null);
+  const [transactionTarget, setTransactionTarget] = useState<Transaction | "new" | null>(null);
+  const [budgetTarget, setBudgetTarget] = useState<Budget | "new" | null>(null);
+  const [goalTarget, setGoalTarget] = useState<SavingsGoal | "new" | null>(null);
+  const [addMoneyTarget, setAddMoneyTarget] = useState<SavingsGoal | null>(null);
+  const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
+  const [displayOpen, setDisplayOpen] = useState(false);
+  // Month snapshots already fetched this session, so going back and forth feels instant.
+  const cache = useRef(new Map<string, Dashboard>());
+  const latestMonthRequest = useRef<string | null>(null);
+
+  const remember = useCallback((data: Dashboard) => { cache.current.set(data.active_month, data); return data; }, []);
+
+  const prefetch = useCallback((month: string, earliest: string) => {
+    if (month < earliest || cache.current.has(month)) return;
+    dashboardApi.load(month).then(remember).catch(() => undefined);
+  }, [remember]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const data = remember(await dashboardApi.load());
+      setDashboard(data);
+    } catch (reason) {
+      setLoadError(describeError(reason, "Penny couldn’t load"));
+    } finally {
+      setLoading(false);
+    }
+  }, [remember]);
+
   useEffect(() => {
+    const fromHash = () => { const hash = window.location.hash.slice(1); if (isView(hash)) setView(hash); };
+    fromHash();
+    window.addEventListener("hashchange", fromHash);
     let active = true;
-    dashboardApi.load().then((data) => { if (active) setDashboard(data); }).catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : "Unable to load Penny"); }).finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
+    dashboardApi.load()
+      .then((data) => { if (active) { setDashboard(remember(data)); prefetch(addMonths(data.active_month, -1), data.data_months[0] ?? data.active_month); } })
+      .catch((reason: unknown) => { if (active) setLoadError(describeError(reason, "Penny couldn’t load")); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; window.removeEventListener("hashchange", fromHash); };
+  }, [prefetch, remember]);
+
+  const navigate = useCallback((next: View) => {
+    withViewTransition(() => setView(next));
+    if (window.location.hash !== `#${next}`) window.history.pushState(null, "", `#${next}`);
+    window.scrollTo({ top: 0 });
+    window.requestAnimationFrame(() => document.getElementById("page-title")?.focus({ preventScroll: true }));
   }, []);
-  async function mutate(action: () => Promise<Dashboard>) { setSaving(true); setError(""); try { setDashboard(await action()); return true; } catch (reason) { setError(reason instanceof Error ? reason.message : "The change could not be saved"); return false; } finally { setSaving(false); } }
-  if (loading) return <DashboardSkeleton />;
-  if (!dashboard) return <LoadError message={error} onRetry={async () => { setLoading(true); setError(""); try { setDashboard(await dashboardApi.load()); } catch (reason) { setError(reason instanceof Error ? reason.message : "Unable to load Penny"); } finally { setLoading(false); } }} />;
-  const firstName = dashboard.profile.display_name.split(" ")[0];
-  return <div className="min-h-screen bg-[#f4f6f2] text-slate-950"><DesktopSidebar active={view} onNavigate={setView} /><main className="min-h-screen pb-28 md:ml-64 md:pb-8"><header className="sticky top-0 z-20 border-b border-slate-200/80 bg-[#f4f6f2]/90 px-4 py-3 backdrop-blur-xl sm:px-6 lg:px-10"><div className="mx-auto flex max-w-7xl items-center justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-700">October 2026</p><h1 className="text-xl font-black tracking-tight sm:text-2xl">{navigation.find((item) => item.id === view)?.label}</h1></div><div className="flex items-center gap-2"><Badge className="hidden sm:inline-flex">Fictional demo</Badge><div className="grid size-11 place-items-center rounded-full bg-emerald-900 text-sm font-black text-white" aria-label={`${dashboard.profile.display_name} profile`}>{dashboard.profile.display_name.split(" ").map((part) => part[0]).join("")}</div></div></div></header>{error && <div role="alert" className="mx-4 mt-4 flex items-center justify-between gap-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-800 sm:mx-6 lg:mx-10"><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError("")} className="grid size-9 place-items-center rounded-full hover:bg-rose-100"><X className="size-4" /></button></div>}<div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-10 lg:py-8">{view === "home" && <HomeView dashboard={dashboard} firstName={firstName} onNavigate={setView} onAddTransaction={() => setTransactionDialog("new")} onEditTransaction={setTransactionDialog} onDeleteTransaction={(id) => void mutate(() => dashboardApi.deleteTransaction(id))} onAddGoal={() => setGoalDialog("new")} onEditGoal={setGoalDialog} />}{view === "budget" && <BudgetView dashboard={dashboard} onAddTransaction={() => setTransactionDialog("new")} onEditTransaction={setTransactionDialog} onDeleteTransaction={(id) => void mutate(() => dashboardApi.deleteTransaction(id))} onAddBudget={() => setBudgetDialog("new")} onEditBudget={setBudgetDialog} />}{view === "council" && <CouncilView dashboard={dashboard} onDashboardChange={setDashboard} />}{view === "learn" && <LearnView />}{view === "credit" && <CreditView dashboard={dashboard} />}</div></main><MobileNavigation active={view} onNavigate={setView} />
-    <TransactionDialog open={transactionDialog} dashboard={dashboard} saving={saving} onOpenChange={(open) => !open && setTransactionDialog(null)} onSubmit={async (id, body) => { const ok = await mutate(() => id ? dashboardApi.updateTransaction(id, body) : dashboardApi.createTransaction(body)); if (ok) setTransactionDialog(null); }} />
-    <BudgetDialog open={budgetDialog} dashboard={dashboard} saving={saving} onOpenChange={(open) => !open && setBudgetDialog(null)} onSubmit={async (id, body) => { const ok = await mutate(() => id ? dashboardApi.updateBudget(id, body.limit_cents) : dashboardApi.createBudget({ ...body, month_start: dashboard.active_month })); if (ok) setBudgetDialog(null); }} onDelete={async (id) => { const ok = await mutate(() => dashboardApi.deleteBudget(id)); if (ok) setBudgetDialog(null); }} />
-    <GoalDialog open={goalDialog} saving={saving} onOpenChange={(open) => !open && setGoalDialog(null)} onSubmit={async (id, body) => { const ok = await mutate(() => id ? dashboardApi.updateGoal(id, body) : dashboardApi.createGoal(body)); if (ok) setGoalDialog(null); }} onDelete={async (id) => { const ok = await mutate(() => dashboardApi.deleteGoal(id)); if (ok) setGoalDialog(null); }} />
-  </div>;
+
+  /** Shows a month immediately from cache (if seen before), then refreshes it from the API. */
+  const goToMonth = useCallback((month: string) => {
+    if (!dashboard || (month === dashboard.active_month && !monthLoading)) return;
+    const earliest = dashboard.data_months[0] ?? month;
+    if (month < earliest || month > dashboard.current_month) return;
+    latestMonthRequest.current = month;
+    const cached = cache.current.get(month);
+    if (cached) withViewTransition(() => setDashboard(cached));
+    setMonthLoading(true);
+    dashboardApi.load(month)
+      .then((data) => {
+        remember(data);
+        if (latestMonthRequest.current !== month) return;
+        setDashboard(data);
+        prefetch(addMonths(month, -1), earliest);
+      })
+      .catch((reason: unknown) => {
+        if (latestMonthRequest.current !== month) return;
+        const error = describeError(reason, "That month couldn’t load");
+        toast({ title: error.title, description: error.detail, tone: "error" });
+      })
+      .finally(() => { if (latestMonthRequest.current === month) setMonthLoading(false); });
+  }, [dashboard, monthLoading, prefetch, remember, toast]);
+
+  const openMonth = useCallback((month: string) => {
+    if (view !== "home") navigate("home");
+    goToMonth(month);
+  }, [goToMonth, navigate, view]);
+
+  /** Applies a fresh snapshot after an edit: other months' cached copies and charts are refreshed. */
+  const applyChange = useCallback((data: Dashboard) => {
+    cache.current.clear();
+    remember(data);
+    setDashboard(data);
+    setHistoryVersion((value) => value + 1);
+  }, [remember]);
+
+  /** Runs an API mutation; shows a toast on success and returns an error message on failure. */
+  const mutate = useCallback<Mutate>(async (action, success, undo) => {
+    try {
+      const data = await action();
+      applyChange(data);
+      const message = typeof success === "string" ? { title: success } : success(data);
+      toast({
+        ...message,
+        action: message.action ?? (undo && {
+          label: undo.label,
+          onClick: () => {
+            undo.run().then((next) => { applyChange(next); toast({ title: undo.done }); })
+              .catch((reason: unknown) => { const error = describeError(reason, "Couldn’t undo"); toast({ title: error.title, description: error.detail, tone: "error" }); });
+          },
+        }),
+      });
+      return null;
+    } catch (reason) {
+      return describeError(reason, "That change couldn’t be saved").detail;
+    }
+  }, [applyChange, toast]);
+
+  useKeyboardShortcuts(dashboard ? {
+    n: () => setTransactionTarget("new"),
+    "[": () => goToMonth(addMonths(dashboard.active_month, -1)),
+    "]": () => goToMonth(addMonths(dashboard.active_month, 1)),
+    d: () => setTheme(resolvedTheme === "dark" ? "light" : "dark"),
+    "?": () => setDisplayOpen(true),
+    ...Object.fromEntries(NAVIGATION.map((item, index) => [String(index + 1), () => navigate(item.id)])),
+  } : {});
+
+  if (loading && !dashboard) return <DashboardSkeleton />;
+  if (!dashboard) return <LoadError error={loadError ?? { title: "Penny couldn’t load", detail: "", needsSignIn: false }} onRetry={() => void load()} />;
+
+  const month = dashboard.active_month;
+
+  const confirmDeleteTransaction = (item: Transaction) => {
+    setTransactionTarget(null);
+    setConfirm(deleteConfirmation(mutate, {
+      title: "Delete this transaction?",
+      description: `“${item.description}” will be removed and your totals will update.`,
+      confirmLabel: "Delete transaction",
+      noun: "Transaction",
+      remove: () => dashboardApi.deleteTransaction(item.id, month),
+      restore: () => dashboardApi.createTransaction({ description: item.description, account_id: item.account_id, category_id: item.category_id, amount_cents: item.amount_cents, kind: item.kind, occurred_on: item.occurred_on }, month),
+    }));
+  };
+  const confirmDeleteBudget = (item: Budget) => {
+    setBudgetTarget(null);
+    setConfirm(deleteConfirmation(mutate, {
+      title: `Delete the ${item.category_name} budget?`,
+      description: "Your transactions stay; only the monthly limit is removed.",
+      confirmLabel: "Delete budget",
+      noun: "Budget",
+      remove: () => dashboardApi.deleteBudget(item.id, month),
+      restore: () => dashboardApi.createBudget({ category_id: item.category_id, month_start: item.month_start, limit_cents: item.limit_cents }, month),
+    }));
+  };
+  const confirmDeleteGoal = (item: SavingsGoal) => {
+    setGoalTarget(null);
+    setConfirm(deleteConfirmation(mutate, {
+      title: `Delete “${item.name}”?`,
+      description: "This removes the goal and its progress.",
+      confirmLabel: "Delete goal",
+      noun: "Goal",
+      remove: () => dashboardApi.deleteGoal(item.id, month),
+      restore: () => dashboardApi.createGoal({ name: item.name, target_cents: item.target_cents, current_cents: item.current_cents, target_date: item.target_date }, month),
+    }));
+  };
+  const copyBudgets = (fromMonth: string) => {
+    void mutate(() => dashboardApi.copyBudgets(fromMonth, month), (data) => ({ title: "Budgets copied", description: `${formatMonth(month)} now has ${data.budgets.length} category limits.` }))
+      .then((error) => { if (error) toast({ title: "Nothing to copy", description: error, tone: "error" }); });
+  };
+  const completeMission = (mission: Mission) => {
+    void mutate(() => dashboardApi.completeMission(mission.id, month), `Mission complete · +${mission.xp_reward} XP`)
+      .then((error) => { if (error) toast({ title: "Couldn’t complete the mission", description: error, tone: "error" }); });
+  };
+
+  const homeActions = {
+    onNavigate: navigate,
+    onSelectMonth: openMonth,
+    onAddTransaction: () => setTransactionTarget("new"),
+    onEditTransaction: setTransactionTarget,
+    onDeleteTransaction: confirmDeleteTransaction,
+    onAddGoal: () => setGoalTarget("new"),
+    onEditGoal: setGoalTarget,
+    onAddToGoal: setAddMoneyTarget,
+    onEditBudget: setBudgetTarget,
+    onCompleteMission: completeMission,
+  };
+
+  return (
+    <div className="min-h-dvh">
+      <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[70] focus:rounded-xl focus:bg-surface focus:px-4 focus:py-3 focus:font-semibold focus:shadow-[var(--shadow-raised)]">Skip to content</a>
+      <Sidebar active={view} dashboard={dashboard} onNavigate={navigate} onOpenDisplay={() => setDisplayOpen(true)} />
+      <div className="lg:pl-64">
+        <PageHeader view={view} dashboard={dashboard} monthLoading={monthLoading} onChangeMonth={goToMonth} onAddTransaction={() => setTransactionTarget("new")} onOpenDisplay={() => setDisplayOpen(true)} />
+        <main id="main" tabIndex={-1} className="mx-auto max-w-7xl px-4 pb-[calc(6.5rem+env(safe-area-inset-bottom))] pt-5 focus:outline-none sm:px-6 lg:px-10 lg:pb-12 lg:pt-8 compact:lg:pt-6">
+          <div key={`${view}-${density}`} className={monthLoading ? "animate-fade opacity-70 transition-opacity duration-200" : "animate-fade transition-opacity duration-200"} aria-busy={monthLoading}>
+            {view === "home" && <HomeView dashboard={dashboard} density={density} historyVersion={historyVersion} actions={homeActions} />}
+            {view === "budget" && <BudgetView dashboard={dashboard} density={density} onAddTransaction={() => setTransactionTarget("new")} onEditTransaction={setTransactionTarget} onDeleteTransaction={confirmDeleteTransaction} onAddBudget={() => setBudgetTarget("new")} onEditBudget={setBudgetTarget} onCopyBudgets={copyBudgets} />}
+            {view === "insights" && <InsightsView dashboard={dashboard} density={density} historyVersion={historyVersion} onOpenMonth={openMonth} />}
+            {view === "council" && <CouncilView dashboard={dashboard} onDashboardChange={applyChange} onApproved={(message) => toast({ title: message })} />}
+            {view === "learn" && <LearnView />}
+            {view === "credit" && <CreditView dashboard={dashboard} />}
+          </div>
+          <div className="mt-8"><MobileAccount dashboard={dashboard} onOpenDisplay={() => setDisplayOpen(true)} /></div>
+        </main>
+      </div>
+      <MobileNavigation active={view} onNavigate={navigate} />
+
+      <EditDialogs
+        dashboard={dashboard}
+        mutate={mutate}
+        onOpenMonth={openMonth}
+        transaction={[transactionTarget, setTransactionTarget, confirmDeleteTransaction]}
+        budget={[budgetTarget, setBudgetTarget, confirmDeleteBudget]}
+        goal={[goalTarget, setGoalTarget, confirmDeleteGoal]}
+        addMoney={[addMoneyTarget, setAddMoneyTarget]}
+      />
+      <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} />
+      <DisplaySettingsDialog open={displayOpen} onOpenChange={setDisplayOpen} />
+    </div>
+  );
 }
 
-function DesktopSidebar({ active, onNavigate }: { active: View; onNavigate: (view: View) => void }) { return <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-slate-200 bg-[#0d2a22] p-5 text-white md:flex"><div className="mb-9 flex items-center gap-3"><div className="grid size-11 place-items-center rounded-2xl bg-[#d8ff72] text-xl font-black text-emerald-950">P</div><div><p className="text-xl font-black tracking-tight">penny</p><p className="text-xs text-emerald-200">make money make sense</p></div></div><nav aria-label="Primary" className="space-y-1">{navigation.map(({ id, label, icon: Icon }) => <button key={id} onClick={() => onNavigate(id)} aria-current={active === id ? "page" : undefined} className={`flex min-h-12 w-full items-center gap-3 rounded-xl px-3 text-sm font-bold transition ${active === id ? "bg-white text-emerald-950" : "text-emerald-100 hover:bg-white/10 hover:text-white"}`}><Icon className="size-5" aria-hidden="true" />{label}</button>)}</nav><div className="mt-auto rounded-2xl border border-white/10 bg-white/5 p-4"><div className="mb-3 flex items-center gap-2 text-sm font-bold"><ShieldCheck className="size-5 text-[#d8ff72]" />Demo-safe data</div><p className="text-xs leading-relaxed text-emerald-100">Every account and transaction is fictional. No bank is connected.</p></div></aside>; }
-function MobileNavigation({ active, onNavigate }: { active: View; onNavigate: (view: View) => void }) { return <nav aria-label="Primary" className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 px-1 pb-[max(0.6rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur-xl md:hidden"><div className="mx-auto flex max-w-lg justify-around">{navigation.map(({ id, label, icon: Icon }) => <button key={id} onClick={() => onNavigate(id)} aria-current={active === id ? "page" : undefined} className={`flex min-h-12 min-w-14 flex-col items-center justify-center gap-1 rounded-xl px-2 text-[11px] font-bold ${active === id ? "text-emerald-800" : "text-slate-500"}`}><Icon className={`size-5 ${active === id ? "stroke-[2.5]" : ""}`} aria-hidden="true" />{label}</button>)}</div></nav>; }
+type DialogSlot<T> = [target: T | null, setTarget: (target: T | null) => void, requestDelete: (item: Exclude<T, "new">) => void];
 
-type HomeProps = { dashboard: Dashboard; firstName: string; onNavigate: (view: View) => void; onAddTransaction: () => void; onEditTransaction: (item: Transaction) => void; onDeleteTransaction: (id: string) => void; onAddGoal: () => void; onEditGoal: (item: SavingsGoal) => void };
-function HomeView({ dashboard, firstName, onNavigate, onAddTransaction, onEditTransaction, onDeleteTransaction, onAddGoal, onEditGoal }: HomeProps) { return <div className="space-y-8"><section className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-sm font-semibold text-slate-500">Your money, clearly</p><h2 className="mt-1 text-3xl font-black tracking-tight sm:text-4xl">Good afternoon, {firstName}.</h2><p className="mt-2 text-sm text-slate-600">{dashboard.profile.school} · {dashboard.profile.city}, {dashboard.profile.province}</p></div><Button onClick={onAddTransaction}><Plus className="size-4" />Add transaction</Button></section><section aria-label="Financial overview" className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><MetricCard label="Available balance" value={formatCad(String(dashboard.totals.available_balance_cents))} note="Across cash accounts" icon={WalletCards} featured /><MetricCard label="Monthly income" value={formatCad(String(dashboard.totals.income_cents), true)} note="October inflows" icon={TrendingUp} positive /><MetricCard label="Monthly spending" value={formatCad(String(-dashboard.totals.spending_cents))} note="October outflows" icon={TrendingDown} /><MetricCard label="Budget remaining" value={formatCad(String(dashboard.totals.budget_remaining_cents))} note={`of ${formatCad(String(dashboard.totals.total_budget_cents))}`} icon={CircleDollarSign} positive={dashboard.totals.budget_remaining_cents >= 0} /></section><div className="grid gap-6 xl:grid-cols-[1.35fr_0.65fr]"><CategoryChart dashboard={dashboard} /><CouncilCard onOpen={() => onNavigate("council")} /></div><div className="grid gap-6 xl:grid-cols-[1.35fr_0.65fr]"><TransactionList transactions={dashboard.transactions.slice(0, 6)} title="Recent transactions" onAdd={onAddTransaction} onEdit={onEditTransaction} onDelete={onDeleteTransaction} /><GoalsCard goals={dashboard.savings_goals} onAdd={onAddGoal} onEdit={onEditGoal} /></div><MissionsCard missions={dashboard.missions} /></div>; }
-function MetricCard({ label, value, note, icon: Icon, featured, positive }: { label: string; value: string; note: string; icon: typeof Home; featured?: boolean; positive?: boolean }) { return <Card className={featured ? "border-0 bg-emerald-800 text-white shadow-lg shadow-emerald-950/10" : "border-slate-200/80"}><CardContent className="p-5"><div className={`mb-5 grid size-10 place-items-center rounded-xl ${featured ? "bg-white/15 text-[#d8ff72]" : "bg-slate-100 text-slate-600"}`}><Icon className="size-5" aria-hidden="true" /></div><p className={`text-sm font-semibold ${featured ? "text-emerald-100" : "text-slate-500"}`}>{label}</p><p className={`mt-1 text-2xl font-black tracking-tight ${positive && !featured ? "text-emerald-700" : ""}`}>{value}</p><p className={`mt-2 text-xs ${featured ? "text-emerald-200" : "text-slate-500"}`}>{note}</p></CardContent></Card>; }
+/** The create/edit dialogs. Each submit resolves to an error message shown inside its dialog. */
+function EditDialogs({ dashboard, mutate, onOpenMonth, transaction, budget, goal, addMoney }: {
+  dashboard: Dashboard;
+  mutate: Mutate;
+  onOpenMonth: (month: string) => void;
+  transaction: DialogSlot<Transaction | "new">;
+  budget: DialogSlot<Budget | "new">;
+  goal: DialogSlot<SavingsGoal | "new">;
+  addMoney: [target: SavingsGoal | null, setTarget: (target: SavingsGoal | null) => void];
+}) {
+  const month = dashboard.active_month;
+  const [transactionTarget, setTransactionTarget, deleteTransaction] = transaction;
+  const [budgetTarget, setBudgetTarget, deleteBudget] = budget;
+  const [goalTarget, setGoalTarget, deleteGoal] = goal;
+  const [addMoneyTarget, setAddMoneyTarget] = addMoney;
 
-function CategoryChart({ dashboard }: { dashboard: Dashboard }) { return <Card><CardHeader className="flex-row items-start justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-emerald-700">Spending mix</p><CardTitle className="mt-1 text-xl">By category</CardTitle></div><span className="text-sm font-bold">{formatCad(String(dashboard.totals.spending_cents))}</span></CardHeader><CardContent>{dashboard.category_spending.length === 0 ? <EmptyState icon={ReceiptText} title="No spending yet" description="Add a spending transaction to see your category chart." /> : <div className="space-y-4">{dashboard.category_spending.map((item) => <div key={item.category_id ?? "none"}><div className="mb-2 flex items-center justify-between gap-3 text-sm"><span className="flex items-center gap-2 font-semibold"><span className={`size-2.5 rounded-full ${colours[item.colour_token] ?? colours.slate}`} />{item.category_name}</span><span className="text-slate-500">{formatCad(String(item.spent_cents))} · {(item.share_basis_points / 100).toFixed(1)}%</span></div><div className="h-2.5 overflow-hidden rounded-full bg-slate-100" role="img" aria-label={`${item.category_name}, ${(item.share_basis_points / 100).toFixed(1)} percent of spending`}><div className={`h-full rounded-full ${colours[item.colour_token] ?? colours.slate}`} style={{ width: `${item.share_basis_points / 100}%` }} /></div></div>)}</div>}</CardContent></Card>; }
-function CouncilCard({ onOpen }: { onOpen: () => void }) { return <Card className="overflow-hidden border-0 bg-[#d8ff72]"><CardContent className="p-6"><div className="flex items-center justify-between"><div className="grid size-12 place-items-center rounded-2xl bg-emerald-950 text-[#d8ff72]"><Bot aria-hidden="true" /></div><Badge className="bg-emerald-950/10 text-emerald-950">Live demo</Badge></div><p className="mt-8 text-xs font-bold uppercase tracking-[0.16em] text-emerald-900">Penny Council</p><h3 className="mt-2 text-2xl font-black tracking-tight text-emerald-950">Three perspectives. Verified numbers.</h3><p className="mt-3 text-sm leading-relaxed text-emerald-950/75">Ask Savvy, Max, and Joy about Maya’s $1,200 school laptop decision. Every amount is calculated and checked by Penny.</p><Button className="mt-6 w-full bg-emerald-950 hover:bg-emerald-900" onClick={onOpen}>Ask the Council <ArrowRight className="size-4" /></Button></CardContent></Card>; }
-
-function TransactionList({ transactions, title, onAdd, onEdit, onDelete }: { transactions: Transaction[]; title: string; onAdd: () => void; onEdit: (item: Transaction) => void; onDelete: (id: string) => void }) { return <Card><CardHeader className="flex-row items-center justify-between"><CardTitle className="text-xl">{title}</CardTitle><Button size="sm" variant="secondary" onClick={onAdd}><Plus className="size-4" />Add</Button></CardHeader><CardContent className="p-0">{transactions.length === 0 ? <div className="px-5 pb-5"><EmptyState icon={ReceiptText} title="No transactions" description="Add your first fictional transaction to start a monthly view." /></div> : <div className="divide-y divide-slate-100">{transactions.map((item) => <div key={item.id} className="flex min-h-16 items-center gap-3 px-4 py-3 sm:px-5"><div className={`grid size-10 shrink-0 place-items-center rounded-xl ${item.kind === "income" ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>{item.kind === "income" ? <ArrowDownLeft className="size-5" aria-hidden="true" /> : <ArrowUpRight className="size-5" aria-hidden="true" />}</div><div className="min-w-0 flex-1"><p className="truncate text-sm font-bold">{item.description}</p><p className="truncate text-xs text-slate-500">{item.category} · {formatShortDate(item.occurred_on)}</p></div><p className={`whitespace-nowrap text-sm font-black ${item.kind === "income" ? "text-emerald-700" : ""}`}>{formatCad(String(item.kind === "income" ? item.amount_cents : -item.amount_cents), item.kind === "income")}</p><div className="flex"><button onClick={() => onEdit(item)} className="grid size-10 place-items-center rounded-lg text-slate-500 hover:bg-slate-100" aria-label={`Edit ${item.description}`}><Pencil className="size-4" /></button><button onClick={() => { if (window.confirm(`Delete ${item.description}?`)) onDelete(item.id); }} className="grid size-10 place-items-center rounded-lg text-slate-500 hover:bg-rose-50 hover:text-rose-700" aria-label={`Delete ${item.description}`}><Trash2 className="size-4" /></button></div></div>)}</div>}</CardContent></Card>; }
-function GoalsCard({ goals, onAdd, onEdit }: { goals: SavingsGoal[]; onAdd: () => void; onEdit: (item: SavingsGoal) => void }) { return <Card><CardHeader className="flex-row items-center justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-amber-700">Make it real</p><CardTitle className="mt-1 text-xl">Savings goals</CardTitle></div><Button size="icon" variant="ghost" onClick={onAdd} aria-label="Add savings goal"><Plus className="size-5" /></Button></CardHeader><CardContent>{goals.length === 0 ? <EmptyState icon={PiggyBank} title="No savings goals" description="Create a goal and give your next dollar a destination." action={<Button size="sm" onClick={onAdd}>Create goal</Button>} /> : <div className="space-y-4">{goals.map((goal) => <button key={goal.id} onClick={() => onEdit(goal)} className="w-full rounded-2xl bg-amber-50 p-4 text-left transition hover:bg-amber-100"><div className="flex items-start justify-between gap-3"><div><p className="font-bold">{goal.name}</p><p className="mt-1 text-xs text-slate-600">{goal.target_date ? `Target ${formatLongDate(goal.target_date)}` : "No target date"}</p></div><Pencil className="size-4 text-amber-800" /></div><div className="mt-4 flex items-end justify-between"><p className="text-xl font-black">{formatCad(String(goal.current_cents))}</p><p className="text-xs font-semibold text-slate-600">of {formatCad(String(goal.target_cents))}</p></div><Progress className="mt-3 bg-white" indicatorClassName="bg-amber-500" value={goal.progress_basis_points / 100} aria-label={`${goal.name} progress`} /></button>)}</div>}</CardContent></Card>; }
-function MissionsCard({ missions }: { missions: Dashboard["missions"] }) { return <section aria-labelledby="missions-heading"><div className="mb-3"><p className="text-xs font-bold uppercase tracking-[0.16em] text-emerald-700">Build the habit</p><h2 id="missions-heading" className="mt-1 text-2xl font-black">Responsible missions</h2></div>{missions.length === 0 ? <Card><CardContent className="pt-5"><EmptyState icon={Target} title="No active missions" description="New responsible money habits will appear here." /></CardContent></Card> : <div className="grid gap-3 sm:grid-cols-2">{missions.map((mission) => <Card key={mission.id} className={mission.completed ? "bg-slate-50" : ""}><CardContent className="flex gap-4 p-5"><div className={`grid size-11 shrink-0 place-items-center rounded-2xl ${mission.completed ? "bg-emerald-100 text-emerald-700" : "bg-violet-100 text-violet-700"}`}>{mission.completed ? <Check className="size-5" /> : <Target className="size-5" />}</div><div><div className="flex flex-wrap items-center gap-2"><h3 className="font-bold">{mission.title}</h3><Badge className="bg-violet-100 text-violet-700">+{mission.xp_reward} XP</Badge></div><p className="mt-2 text-sm leading-relaxed text-slate-600">{mission.description}</p></div></CardContent></Card>)}</div>}</section>; }
-
-type BudgetProps = { dashboard: Dashboard; onAddTransaction: () => void; onEditTransaction: (item: Transaction) => void; onDeleteTransaction: (id: string) => void; onAddBudget: () => void; onEditBudget: (item: Budget) => void };
-function BudgetView({ dashboard, onAddTransaction, onEditTransaction, onDeleteTransaction, onAddBudget, onEditBudget }: BudgetProps) { return <div className="space-y-8"><section className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-sm font-semibold text-slate-500">October plan</p><h2 className="mt-1 text-3xl font-black tracking-tight">Your budget, category by category.</h2><p className="mt-2 text-sm text-slate-600">Every amount below is recalculated by the Penny API.</p></div><div className="flex gap-2"><Button variant="outline" onClick={onAddBudget}><Plus className="size-4" />Budget</Button><Button onClick={onAddTransaction}><Plus className="size-4" />Transaction</Button></div></section><section className="grid gap-3 sm:grid-cols-3"><MetricCard label="Planned" value={formatCad(String(dashboard.totals.total_budget_cents))} note="Across categories" icon={LayoutDashboard} /><MetricCard label="Spent" value={formatCad(String(dashboard.totals.spending_cents))} note="This month" icon={ReceiptText} /><MetricCard label="Remaining" value={formatCad(String(dashboard.totals.budget_remaining_cents))} note="Plan minus spending" icon={CircleDollarSign} positive={dashboard.totals.budget_remaining_cents >= 0} /></section><section><div className="mb-3 flex items-center justify-between"><h3 className="text-2xl font-black">Monthly budgets</h3><Button size="sm" variant="secondary" onClick={onAddBudget}><Plus className="size-4" />Add category</Button></div>{dashboard.budgets.length === 0 ? <Card><CardContent className="pt-5"><EmptyState icon={LayoutDashboard} title="No monthly budgets" description="Set a category limit to start tracking your plan." action={<Button size="sm" onClick={onAddBudget}>Add budget</Button>} /></CardContent></Card> : <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{dashboard.budgets.map((budget) => <button key={budget.id} onClick={() => onEditBudget(budget)} className="rounded-3xl border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"><div className="flex items-center justify-between"><p className="font-bold">{budget.category_name}</p><Pencil className="size-4 text-slate-400" /></div><p className="mt-5 text-2xl font-black">{formatCad(String(budget.remaining_cents))}</p><p className="mt-1 text-xs text-slate-500">remaining of {formatCad(String(budget.limit_cents))}</p><Progress className="mt-4" value={Math.min(100, budget.usage_basis_points / 100)} indicatorClassName={budget.remaining_cents < 0 ? "bg-rose-500" : "bg-emerald-500"} aria-label={`${budget.category_name} budget usage`} /></button>)}</div>}</section><TransactionList transactions={dashboard.transactions} title="All transactions" onAdd={onAddTransaction} onEdit={onEditTransaction} onDelete={onDeleteTransaction} /></div>; }
-
-function CouncilView({ dashboard, onDashboardChange }: { dashboard: Dashboard; onDashboardChange: (dashboard: Dashboard) => void }) {
-  const laptopGoal = dashboard.savings_goals.find((goal) => goal.id === "goal-laptop");
-  const [result, setResult] = useState<CouncilResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [approvedMessage, setApprovedMessage] = useState("");
-  const contextKey = `${dashboard.totals.income_cents}:${dashboard.totals.spending_cents}:${laptopGoal?.current_cents ?? 0}`;
-
-  useEffect(() => {
-    let active = true;
-    councilApi.analyze({ question: "Can I afford a laptop for school?", purchase_name: "Laptop", purchase_cents: 120_000, time_horizon_months: 3, savings_goal_id: laptopGoal?.id }).then((response) => { if (active) setResult(response); }).catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : "Council could not run"); }).finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, [contextKey, laptopGoal?.id]);
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setLoading(true); setError(""); setApprovedMessage("");
-    const form = new FormData(event.currentTarget);
-    try {
-      setResult(await councilApi.analyze({ question: String(form.get("question")), purchase_name: String(form.get("purchase_name")) || undefined, purchase_cents: form.get("price") ? parseCadToCents(String(form.get("price"))) : undefined, time_horizon_months: form.get("months") ? Number(form.get("months")) : undefined, savings_goal_id: String(form.get("goal_id")) || undefined }));
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Council could not run"); }
-    finally { setLoading(false); }
+  /** Saves, then closes the dialog only if the API accepted the change. */
+  async function saveAndClose(save: Promise<string | null>, close: () => void) {
+    const error = await save;
+    if (!error) close();
+    return error;
   }
 
-  async function approve() {
-    if (!result?.goal_change_proposal) return;
-    setLoading(true); setError("");
-    try {
-      const response = await councilApi.approveGoalChange(result.goal_change_proposal.proposal_id, result.goal_change_proposal.proposal_version);
-      onDashboardChange(response.dashboard); setApprovedMessage(response.message);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "The proposal could not be approved"); }
-    finally { setLoading(false); }
+  function transactionSaved(id: string | null, occurredOn: string): ToastMessage {
+    const otherMonth = occurredOn.slice(0, 7) === month.slice(0, 7) ? null : `${occurredOn.slice(0, 7)}-01`;
+    const title = id ? "Transaction updated" : "Transaction added";
+    if (!otherMonth || otherMonth > dashboard.current_month) return { title };
+    return { title, description: `It’s dated in ${formatMonth(otherMonth)}.`, action: { label: `View ${formatMonth(otherMonth).split(" ")[0]}`, onClick: () => onOpenMonth(otherMonth) } };
   }
 
-  return <div className="space-y-7"><section className="overflow-hidden rounded-[2rem] bg-emerald-950 p-6 text-white sm:p-8"><div className="flex flex-col justify-between gap-6 lg:flex-row lg:items-end"><div className="max-w-2xl"><div className="mb-5 flex items-center gap-3"><div className="grid size-12 place-items-center rounded-2xl bg-[#d8ff72] text-emerald-950"><Sparkles /></div><Badge className="bg-white/10 text-emerald-100">Verified decision support</Badge></div><h2 className="text-3xl font-black tracking-tight sm:text-4xl">Ask the Council before the money moves.</h2><p className="mt-3 leading-relaxed text-emerald-100">Savvy protects your security, Max compares the plan, and Joy checks whether it is realistic. Penny—not the model—calculates every amount.</p></div><div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-xs text-emerald-100"><p className="font-bold text-white">Bounded by design</p><p className="mt-2">One debate round · five tool calls · verified claims only</p></div></div></section>
-    <Card><CardHeader><CardTitle className="text-xl">Decision scenario</CardTitle></CardHeader><CardContent><form onSubmit={submit} className="grid gap-4 lg:grid-cols-[1.4fr_0.7fr_0.45fr_1fr_auto] lg:items-end"><Field label="Question"><Input name="question" defaultValue="Can I afford a laptop for school?" required /></Field><Field label="Item"><Input name="purchase_name" defaultValue="Laptop" required /></Field><Field label="Price (CAD)"><Input name="price" inputMode="decimal" defaultValue="1200.00" required /></Field><Field label="Save over"><Select name="months" defaultValue="3"><option value="1">1 month</option><option value="2">2 months</option><option value="3">3 months</option><option value="6">6 months</option></Select></Field><div className="hidden"><Select name="goal_id" defaultValue={laptopGoal?.id ?? ""} aria-label="Savings goal"><option value="">No linked goal</option>{dashboard.savings_goals.map((goal) => <option key={goal.id} value={goal.id}>{goal.name}</option>)}</Select></div><Button type="submit" disabled={loading}>{loading ? <RefreshCw className="size-4 animate-spin" /> : <Sparkles className="size-4" />}Ask Council</Button></form></CardContent></Card>
-    {error && <div role="alert" className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-semibold text-rose-800">{error}</div>}
-    {approvedMessage && <div role="status" className="flex items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800"><Check className="size-5" />{approvedMessage}</div>}
-    {loading && !result ? <CouncilSkeleton /> : result && <CouncilResult result={result} loading={loading} onApprove={() => void approve()} />}
-  </div>;
+  function contributionSaved(goalItem: SavingsGoal, data: Dashboard): ToastMessage {
+    const updated = data.savings_goals.find((item) => item.id === goalItem.id);
+    if (!updated) return { title: `Added to ${goalItem.name}` };
+    return { title: updated.status === "completed" ? `${goalItem.name} reached!` : `Added to ${goalItem.name}`, description: `Now saved: ${cad(updated.current_cents)} of ${cad(updated.target_cents)}.` };
+  }
+
+  return (
+    <>
+      <TransactionDialog
+        target={transactionTarget}
+        dashboard={dashboard}
+        onClose={() => setTransactionTarget(null)}
+        onRequestDelete={deleteTransaction}
+        onSubmit={(id, body) => saveAndClose(mutate(() => (id ? dashboardApi.updateTransaction(id, body, month) : dashboardApi.createTransaction(body, month)), () => transactionSaved(id, body.occurred_on)), () => setTransactionTarget(null))}
+      />
+      <BudgetDialog
+        target={budgetTarget}
+        dashboard={dashboard}
+        onClose={() => setBudgetTarget(null)}
+        onRequestDelete={deleteBudget}
+        onSubmit={(id, body) => saveAndClose(mutate(() => (id ? dashboardApi.updateBudget(id, body.limit_cents, month) : dashboardApi.createBudget({ ...body, month_start: month }, month)), id ? "Budget updated" : "Budget added"), () => setBudgetTarget(null))}
+      />
+      <GoalDialog
+        target={goalTarget}
+        onClose={() => setGoalTarget(null)}
+        onRequestDelete={deleteGoal}
+        onSubmit={(id, body) => saveAndClose(mutate(() => (id ? dashboardApi.updateGoal(id, body, month) : dashboardApi.createGoal(body, month)), id ? "Goal updated" : "Goal created"), () => setGoalTarget(null))}
+      />
+      <AddMoneyDialog
+        goal={addMoneyTarget}
+        onClose={() => setAddMoneyTarget(null)}
+        onSubmit={(goalItem, amount) => saveAndClose(mutate(() => dashboardApi.contributeToGoal(goalItem.id, amount, month), (data) => contributionSaved(goalItem, data)), () => setAddMoneyTarget(null))}
+      />
+    </>
+  );
 }
 
-function CouncilResult({ result, loading, onApprove }: { result: CouncilResponse; loading: boolean; onApprove: () => void }) {
-  if (result.status === "needs_information") return <Card><CardContent className="p-6"><h3 className="text-xl font-black">Council needs more information</h3><p className="mt-2 text-sm text-slate-600">Penny will not guess missing financial details.</p><ul className="mt-5 space-y-2">{result.missing_information.map((item) => <li key={item} className="flex gap-2 text-sm"><CircleDollarSign className="mt-0.5 size-4 text-amber-600" />{item}</li>)}</ul></CardContent></Card>;
-  const decisionLabels = { buy_now: "Buy now", save_then_buy: "Save first, then buy", wait: "Wait", needs_information: "More information needed" };
-  return <div className="space-y-7"><Card className="overflow-hidden border-0 bg-[#d8ff72]"><CardContent className="p-6 sm:p-8"><div className="flex flex-col justify-between gap-6 sm:flex-row"><div><div className="flex flex-wrap items-center gap-2"><Badge className="bg-emerald-950 text-[#d8ff72]">Council recommendation</Badge>{result.verification.verified && <Badge className="bg-white/70 text-emerald-900"><ShieldCheck className="mr-1 size-3.5" />Quantities verified</Badge>}</div><h3 className="mt-5 text-3xl font-black tracking-tight text-emerald-950">{decisionLabels[result.decision]}</h3><p className="mt-2 max-w-2xl text-emerald-950/75">{result.summary}</p></div><div className="shrink-0 text-sm text-emerald-950/70"><p>{result.limits.tool_calls_used}/{result.limits.tool_calls_max} tools</p><p className="mt-1">{result.limits.execution_ms} ms</p><p className="mt-1">{result.llm_status === "used" ? "AI explanation used" : "Deterministic fallback"}</p></div></div></CardContent></Card>
-    <section><div className="mb-3"><p className="text-xs font-bold uppercase tracking-[0.16em] text-emerald-700">Verified facts</p><h3 className="mt-1 text-2xl font-black">The numbers Council used</h3></div><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{result.quantitative_claims.map((claim) => <Card key={claim.id}><CardContent className="p-5"><p className="text-sm font-semibold text-slate-500">{claim.label}</p><p className={`mt-2 text-2xl font-black ${claim.value_cents < 0 ? "text-rose-700" : ""}`}>{formatCad(String(claim.value_cents))}</p><p className="mt-3 text-[11px] font-semibold text-slate-400">Source: {claim.source_tool}</p></CardContent></Card>)}</div></section>
-    <section><div className="mb-3"><p className="text-xs font-bold uppercase tracking-[0.16em] text-emerald-700">Three lenses</p><h3 className="mt-1 text-2xl font-black">Agent viewpoints</h3></div><div className="grid gap-4 xl:grid-cols-3">{result.viewpoints.map((viewpoint) => <Card key={viewpoint.agent} className={viewpoint.agent === "Savvy" ? "border-sky-200" : viewpoint.agent === "Max" ? "border-violet-200" : "border-amber-200"}><CardContent className="p-6"><div className="flex items-center justify-between"><div className={`grid size-11 place-items-center rounded-2xl ${viewpoint.agent === "Savvy" ? "bg-sky-100 text-sky-700" : viewpoint.agent === "Max" ? "bg-violet-100 text-violet-700" : "bg-amber-100 text-amber-700"}`}>{viewpoint.agent === "Savvy" ? <ShieldCheck /> : viewpoint.agent === "Max" ? <Landmark /> : <Lightbulb />}</div><Badge className="bg-slate-100 text-slate-700">{viewpoint.stance}</Badge></div><p className="mt-5 text-xs font-bold uppercase tracking-widest text-slate-500">{viewpoint.role}</p><h4 className="mt-2 text-xl font-black">{viewpoint.agent}: {viewpoint.headline}</h4><p className="mt-3 text-sm leading-relaxed text-slate-600">{viewpoint.reasoning}</p><div className="mt-5 border-t border-slate-100 pt-4"><p className="text-xs font-bold uppercase tracking-wider text-slate-500">Trade-offs</p><ul className="mt-2 space-y-2">{viewpoint.tradeoffs.map((item) => <li key={item} className="flex gap-2 text-sm text-slate-600"><ArrowRight className="mt-0.5 size-4 shrink-0 text-emerald-700" />{item}</li>)}</ul></div></CardContent></Card>)}</div></section>
-    <div className="grid gap-6 lg:grid-cols-2"><Card><CardHeader><CardTitle>Scenario comparison</CardTitle></CardHeader><CardContent className="space-y-3">{result.scenarios.map((scenario) => <div key={scenario.name} className="rounded-2xl bg-slate-50 p-4"><div className="flex items-center justify-between gap-3"><p className="font-bold">{scenario.name}</p>{scenario.months && <Badge className="bg-white text-slate-700">{scenario.months} months</Badge>}</div><p className="mt-1 text-sm text-slate-600">{scenario.description}</p><div className="mt-3 flex justify-between gap-3 text-sm"><span className="text-slate-500">Cash flow after</span><strong className={scenario.cash_flow_after_cents < 0 ? "text-rose-700" : "text-emerald-700"}>{formatCad(String(scenario.cash_flow_after_cents))}</strong></div><div className="mt-1 flex justify-between gap-3 text-sm"><span className="text-slate-500">Budget after</span><strong className={scenario.budget_remaining_after_cents < 0 ? "text-rose-700" : ""}>{formatCad(String(scenario.budget_remaining_after_cents))}</strong></div></div>)}</CardContent></Card><Card><CardHeader><CardTitle>Where they disagree</CardTitle></CardHeader><CardContent><div className="rounded-2xl bg-violet-50 p-4 text-sm leading-relaxed text-violet-950">{result.disagreements[0]}</div><p className="mt-5 text-xs font-bold uppercase tracking-wider text-slate-500">Shared assumptions</p><ul className="mt-3 space-y-2">{result.assumptions.map((item) => <li key={item} className="flex gap-2 text-sm text-slate-600"><Check className="mt-0.5 size-4 shrink-0 text-emerald-700" />{item}</li>)}</ul></CardContent></Card></div>
-    {result.goal_change_proposal && <Card className="border-2 border-emerald-300"><CardContent className="p-6 sm:flex sm:items-center sm:justify-between sm:gap-6"><div><div className="flex items-center gap-2"><PiggyBank className="size-5 text-emerald-700" /><p className="font-black">Approval required: update {result.goal_change_proposal.goal_name}</p></div><p className="mt-2 text-sm text-slate-600">Add {formatCad(String(result.goal_change_proposal.contribution_cents))}, changing progress from {formatCad(String(result.goal_change_proposal.current_cents))} to {formatCad(String(result.goal_change_proposal.proposed_current_cents))}. Nothing changes until you approve.</p></div><Button className="mt-4 w-full sm:mt-0 sm:w-auto" disabled={loading} onClick={onApprove}><Check className="size-4" />Approve contribution</Button></CardContent></Card>}
-    <Card><CardHeader><CardTitle>Recommended actions</CardTitle></CardHeader><CardContent className="grid gap-3 md:grid-cols-3">{result.recommended_actions.map((action, index) => <div key={action.title} className="rounded-2xl border border-slate-200 p-4"><div className="grid size-8 place-items-center rounded-full bg-emerald-100 text-sm font-black text-emerald-800">{index + 1}</div><p className="mt-4 font-bold">{action.title}</p><p className="mt-2 text-sm leading-relaxed text-slate-600">{action.rationale}</p></div>)}</CardContent></Card>
-  </div>;
+function DashboardSkeleton() {
+  const tiles = ["tile-in", "tile-out", "tile-left"];
+  const panels = ["panel-1", "panel-2", "panel-3"];
+  return (
+    <div className="min-h-dvh lg:pl-64" aria-busy="true">
+      <div className="fixed inset-y-0 left-0 hidden w-64 border-r border-line lg:block" />
+      <div className="mx-auto max-w-7xl animate-pulse px-4 py-6 sm:px-6 lg:px-10 lg:py-8">
+        <div className="h-4 w-32 rounded-full bg-sage" />
+        <div className="mt-3 h-8 w-64 max-w-full rounded-xl bg-sage" />
+        <div className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="h-40 rounded-[var(--radius-card)] bg-hero/20" />
+          {tiles.map((key) => <div key={key} className="h-40 rounded-[var(--radius-card)] border border-line bg-surface" />)}
+        </div>
+        <div className="mt-6 grid gap-6 lg:grid-cols-3">{panels.map((key) => <div key={key} className="h-80 rounded-[var(--radius-card)] border border-line bg-surface" />)}</div>
+        <output className="sr-only">Loading your Penny dashboard</output>
+      </div>
+    </div>
+  );
 }
 
-function CouncilSkeleton() { return <div className="grid animate-pulse gap-4 lg:grid-cols-3" aria-live="polite"><p className="sr-only">Council is comparing verified scenarios</p>{Array.from({ length: 3 }).map((_, index) => <div key={index} className="h-72 rounded-3xl bg-white" />)}</div>; }
-function LearnView() { return <PlaceholderView icon={BookOpen} eyebrow="Learn" title="Small lessons. Better money instincts." description="Financial literacy content will live here. The current dashboard keeps this path visible without pretending unfinished lessons are available." cards={[{ icon: BookOpen, title: "Budget basics", body: "Understand income, spending, and a monthly plan." }, { icon: CreditCard, title: "Credit clarity", body: "Learn what utilization means—and what it cannot promise." }, { icon: PiggyBank, title: "Savings habits", body: "Build a cushion one realistic contribution at a time." }]} />; }
-function CreditView({ dashboard }: { dashboard: Dashboard }) { const percent = dashboard.credit.utilization_basis_points / 100; return <div className="mx-auto max-w-3xl"><p className="text-xs font-bold uppercase tracking-[0.18em] text-emerald-700">Credit education</p><h2 className="mt-2 text-3xl font-black tracking-tight">Understand your utilization.</h2><p className="mt-3 max-w-2xl text-slate-600">This fictional scenario explains a ratio. It does not predict a credit score or offer lending advice.</p><Card className="mt-8 overflow-hidden"><div className="bg-emerald-950 p-6 text-white"><div className="flex items-center justify-between"><div><p className="text-sm text-emerald-200">{dashboard.credit.account_name}</p><p className="mt-2 text-4xl font-black">{percent.toFixed(1)}%</p></div><div className="grid size-14 place-items-center rounded-2xl bg-white/10"><CreditCard /></div></div><Progress className="mt-6 bg-white/15" indicatorClassName="bg-[#d8ff72]" value={percent} aria-label={`Credit utilization ${percent.toFixed(1)} percent`} /></div><CardContent className="grid gap-5 p-6 sm:grid-cols-2"><div><p className="text-sm text-slate-500">Fictional balance</p><p className="mt-1 text-2xl font-black">{formatCad(String(dashboard.credit.balance_cents))}</p></div><div><p className="text-sm text-slate-500">Fictional limit</p><p className="mt-1 text-2xl font-black">{formatCad(String(dashboard.credit.credit_limit_cents))}</p></div><div className="rounded-2xl bg-sky-50 p-4 text-sm leading-relaxed text-sky-900 sm:col-span-2"><strong>How it is calculated:</strong> balance divided by credit limit. Penny calculates the ratio on the backend using integer basis points.</div></CardContent></Card></div>; }
-function PlaceholderView({ icon: Icon, eyebrow, title, description, cards }: { icon: typeof Home; eyebrow: string; title: string; description: string; cards: { icon: typeof Home; title: string; body: string }[] }) { return <div className="mx-auto max-w-4xl"><div className="grid size-14 place-items-center rounded-2xl bg-emerald-100 text-emerald-800"><Icon /></div><p className="mt-6 text-xs font-bold uppercase tracking-[0.18em] text-emerald-700">{eyebrow}</p><h2 className="mt-2 max-w-3xl text-3xl font-black tracking-tight sm:text-4xl">{title}</h2><p className="mt-4 max-w-2xl leading-relaxed text-slate-600">{description}</p><div className="mt-8 grid gap-3 sm:grid-cols-3">{cards.map(({ icon: CardIcon, title: cardTitle, body }) => <Card key={cardTitle}><CardContent className="p-5"><CardIcon className="size-5 text-emerald-700" /><h3 className="mt-5 font-bold">{cardTitle}</h3><p className="mt-2 text-sm leading-relaxed text-slate-600">{body}</p></CardContent></Card>)}</div></div>; }
-
-type TransactionBody = { description: string; account_id: string; category_id: string | null; amount_cents: number; kind: "income" | "spending"; occurred_on: string };
-function TransactionDialog({ open, dashboard, saving, onOpenChange, onSubmit }: { open: Transaction | "new" | null; dashboard: Dashboard; saving: boolean; onOpenChange: (open: boolean) => void; onSubmit: (id: string | null, body: TransactionBody) => Promise<void> }) { const item = open && open !== "new" ? open : null; const [formError, setFormError] = useState(""); async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); setFormError(""); const form = new FormData(event.currentTarget); try { await onSubmit(item?.id ?? null, { description: String(form.get("description")), account_id: String(form.get("account_id")), category_id: String(form.get("category_id")) || null, amount_cents: parseCadToCents(String(form.get("amount"))), kind: String(form.get("kind")) as "income" | "spending", occurred_on: String(form.get("occurred_on")) }); } catch (reason) { setFormError(reason instanceof Error ? reason.message : "Invalid transaction"); } } return <Dialog open={open !== null} onOpenChange={onOpenChange}><DialogContent key={item?.id ?? "new"}><DialogHeader><DialogTitle>{item ? "Edit transaction" : "Add transaction"}</DialogTitle><DialogDescription>Amounts are converted directly to integer cents before they reach the API.</DialogDescription></DialogHeader><form onSubmit={submit} className="space-y-4"><Field label="Description"><Input name="description" defaultValue={item?.description} required maxLength={160} /></Field><div className="grid gap-4 sm:grid-cols-2"><Field label="Amount (CAD)"><Input name="amount" inputMode="decimal" placeholder="0.00" defaultValue={item ? centsToInput(String(item.amount_cents)) : ""} required /></Field><Field label="Type"><Select name="kind" defaultValue={item?.kind ?? "spending"}><option value="spending">Spending</option><option value="income">Income</option></Select></Field></div><Field label="Account"><Select name="account_id" defaultValue={item?.account_id ?? dashboard.accounts[0]?.id} required>{dashboard.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</Select></Field><Field label="Category"><Select name="category_id" defaultValue={item?.category_id ?? ""}><option value="">Uncategorized</option>{dashboard.categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</Select></Field><Field label="Date"><Input name="occurred_on" type="date" defaultValue={item?.occurred_on ?? "2026-10-29"} required /></Field>{formError && <p role="alert" className="text-sm font-semibold text-rose-700">{formError}</p>}<Button type="submit" disabled={saving} className="w-full">{saving ? <><RefreshCw className="size-4 animate-spin" />Saving</> : item ? "Save changes" : "Add transaction"}</Button></form></DialogContent></Dialog>; }
-function BudgetDialog({ open, dashboard, saving, onOpenChange, onSubmit, onDelete }: { open: Budget | "new" | null; dashboard: Dashboard; saving: boolean; onOpenChange: (open: boolean) => void; onSubmit: (id: string | null, body: { category_id: string; limit_cents: number }) => Promise<void>; onDelete: (id: string) => Promise<void> }) { const item = open && open !== "new" ? open : null; const [formError, setFormError] = useState(""); const budgeted = useMemo(() => new Set(dashboard.budgets.map((budget) => budget.category_id)), [dashboard.budgets]); async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = new FormData(event.currentTarget); try { await onSubmit(item?.id ?? null, { category_id: String(form.get("category_id")), limit_cents: parseCadToCents(String(form.get("limit"))) }); } catch (reason) { setFormError(reason instanceof Error ? reason.message : "Invalid budget"); } } return <Dialog open={open !== null} onOpenChange={onOpenChange}><DialogContent key={item?.id ?? "new"}><DialogHeader><DialogTitle>{item ? `Edit ${item.category_name}` : "Add monthly budget"}</DialogTitle><DialogDescription>Set an October category limit. Spending is calculated from assigned transactions.</DialogDescription></DialogHeader><form onSubmit={submit} className="space-y-4"><Field label="Category"><Select name="category_id" defaultValue={item?.category_id} disabled={Boolean(item)} required>{dashboard.categories.filter((category) => item?.category_id === category.id || (!budgeted.has(category.id) && category.name !== "Income")).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</Select></Field><Field label="Monthly limit (CAD)"><Input name="limit" inputMode="decimal" defaultValue={item ? centsToInput(String(item.limit_cents)) : ""} required /></Field>{formError && <p role="alert" className="text-sm font-semibold text-rose-700">{formError}</p>}<div className="flex gap-2">{item && <Button variant="destructive" disabled={saving} onClick={() => void onDelete(item.id)}><Trash2 className="size-4" />Delete</Button>}<Button type="submit" disabled={saving} className="flex-1">{saving ? "Saving…" : "Save budget"}</Button></div></form></DialogContent></Dialog>; }
-type GoalBody = { name: string; target_cents: number; current_cents: number; target_date: string | null };
-function GoalDialog({ open, saving, onOpenChange, onSubmit, onDelete }: { open: SavingsGoal | "new" | null; saving: boolean; onOpenChange: (open: boolean) => void; onSubmit: (id: string | null, body: GoalBody) => Promise<void>; onDelete: (id: string) => Promise<void> }) { const item = open && open !== "new" ? open : null; const [formError, setFormError] = useState(""); async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = new FormData(event.currentTarget); try { await onSubmit(item?.id ?? null, { name: String(form.get("name")), target_cents: parseCadToCents(String(form.get("target"))), current_cents: parseCadToCents(String(form.get("current"))), target_date: String(form.get("target_date")) || null }); } catch (reason) { setFormError(reason instanceof Error ? reason.message : "Invalid savings goal"); } } return <Dialog open={open !== null} onOpenChange={onOpenChange}><DialogContent key={item?.id ?? "new"}><DialogHeader><DialogTitle>{item ? "Edit savings goal" : "Create savings goal"}</DialogTitle><DialogDescription>Use fictional amounts to practise building a realistic savings target.</DialogDescription></DialogHeader><form onSubmit={submit} className="space-y-4"><Field label="Goal name"><Input name="name" defaultValue={item?.name} required maxLength={100} /></Field><div className="grid gap-4 sm:grid-cols-2"><Field label="Saved so far (CAD)"><Input name="current" inputMode="decimal" defaultValue={item ? centsToInput(String(item.current_cents)) : "0.00"} required /></Field><Field label="Target (CAD)"><Input name="target" inputMode="decimal" defaultValue={item ? centsToInput(String(item.target_cents)) : ""} required /></Field></div><Field label="Target date"><Input name="target_date" type="date" defaultValue={item?.target_date ?? ""} /></Field>{formError && <p role="alert" className="text-sm font-semibold text-rose-700">{formError}</p>}<div className="flex gap-2">{item && <Button variant="destructive" disabled={saving} onClick={() => void onDelete(item.id)}><Trash2 className="size-4" />Delete</Button>}<Button type="submit" disabled={saving} className="flex-1">{saving ? "Saving…" : "Save goal"}</Button></div></form></DialogContent></Dialog>; }
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) { return <Label>{label}<span className="mt-1 block font-normal">{children}</span></Label>; }
-function Select(props: React.ComponentProps<"select">) { return <select className="min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-base shadow-sm focus:border-emerald-600 focus:outline-none focus:ring-2 focus:ring-emerald-600/20 disabled:bg-slate-100" {...props} />; }
-function EmptyState({ icon: Icon, title, description, action }: { icon: typeof Home; title: string; description: string; action?: React.ReactNode }) { return <div className="grid place-items-center rounded-2xl border border-dashed border-slate-300 px-4 py-9 text-center"><div className="grid size-11 place-items-center rounded-2xl bg-slate-100 text-slate-500"><Icon className="size-5" /></div><p className="mt-4 font-bold">{title}</p><p className="mt-1 max-w-sm text-sm text-slate-500">{description}</p>{action && <div className="mt-4">{action}</div>}</div>; }
-function DashboardSkeleton() { return <div className="min-h-screen bg-[#f4f6f2] p-4 md:ml-64 sm:p-6 lg:p-10"><div className="mx-auto max-w-7xl animate-pulse"><div className="h-10 w-64 rounded-xl bg-slate-200" /><div className="mt-8 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{Array.from({ length: 4 }).map((_, index) => <div key={index} className="h-44 rounded-3xl bg-white" />)}</div><div className="mt-6 grid gap-6 xl:grid-cols-2"><div className="h-96 rounded-3xl bg-white" /><div className="h-96 rounded-3xl bg-white" /></div><p className="sr-only" aria-live="polite">Loading Penny dashboard</p></div></div>; }
-function LoadError({ message, onRetry }: { message: string; onRetry: () => void }) { return <main className="grid min-h-screen place-items-center bg-[#f4f6f2] p-4"><Card className="max-w-md"><CardContent className="p-6 text-center"><div className="mx-auto grid size-12 place-items-center rounded-2xl bg-rose-100 text-rose-700"><RefreshCw /></div><h1 className="mt-5 text-2xl font-black">Penny could not load</h1><p className="mt-2 text-sm text-slate-600">{message}</p><Button className="mt-5" onClick={onRetry}><RefreshCw className="size-4" />Try again</Button></CardContent></Card></main>; }
-function formatShortDate(value: string) { return new Intl.DateTimeFormat("en-CA", { month: "short", day: "numeric", timeZone: "UTC" }).format(new Date(`${value}T00:00:00Z`)); }
-function formatLongDate(value: string) { return new Intl.DateTimeFormat("en-CA", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(`${value}T00:00:00Z`)); }
+function LoadError({ error, onRetry }: { error: ReturnType<typeof describeError>; onRetry: () => void }) {
+  const Icon = error.needsSignIn ? LogIn : CloudOff;
+  return (
+    <main className="grid min-h-dvh place-items-center p-4">
+      <div className="w-full max-w-md animate-enter rounded-[1.5rem] border border-line bg-surface p-6 text-center shadow-[var(--shadow-raised)] sm:p-8">
+        <span className={error.needsSignIn ? "mx-auto grid size-12 place-items-center rounded-2xl bg-accent-soft text-accent-strong" : "mx-auto grid size-12 place-items-center rounded-2xl bg-danger-soft text-danger"} aria-hidden="true"><Icon className="size-6" /></span>
+        <h1 className="mt-5 text-xl font-semibold tracking-tight text-ink">{error.title}</h1>
+        <p className="mt-2 text-sm text-ink-muted" role="alert">{error.detail}</p>
+        <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:justify-center">
+          {error.needsSignIn ? <Link href="/login" className={buttonVariants()}><LogIn className="size-4" aria-hidden="true" />Sign in</Link> : null}
+          <Button variant={error.needsSignIn ? "outline" : "default"} onClick={onRetry}><RefreshCw className="size-4" aria-hidden="true" />Try again</Button>
+        </div>
+      </div>
+    </main>
+  );
+}

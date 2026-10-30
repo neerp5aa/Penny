@@ -78,3 +78,32 @@ def build_summary(
         budget_remaining_cents=budget_remaining(budget_cents, spending),
         savings_contributions_cents=contributions,
     )
+
+
+BASIS_POINTS = 10_000
+# Educational guideline often cited in Canadian credit-literacy material; not a score rule.
+COMMON_UTILIZATION_GUIDELINE_BASIS_POINTS = 3_000
+
+
+def share_basis_points(part_cents: int, whole_cents: int) -> int:
+    """Floor of part / whole in basis points; 0 when the whole is 0."""
+    _require_non_negative_cents(part_cents, "part_cents")
+    _require_non_negative_cents(whole_cents, "whole_cents")
+    return part_cents * BASIS_POINTS // whole_cents if whole_cents else 0
+
+
+def credit_utilization_basis_points(balance_cents: int, credit_limit_cents: int) -> int:
+    """Floor of balance / limit in basis points. The limit must be positive."""
+    _require_non_negative_cents(balance_cents, "balance_cents")
+    _require_non_negative_cents(credit_limit_cents, "credit_limit_cents")
+    if credit_limit_cents == 0:
+        raise ValueError("credit_limit_cents must be positive")
+    return balance_cents * BASIS_POINTS // credit_limit_cents
+
+
+def average_cents(total_cents: int, count: int) -> int:
+    """Floor average of a non-negative total over a positive count; 0 for no items."""
+    _require_non_negative_cents(total_cents, "total_cents")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise ValueError("count must be a non-negative integer")
+    return total_cents // count if count else 0

@@ -21,28 +21,11 @@ Use this file for architectural choices, working assumptions, and questions that
 | D-013 | 2026-10-29 | Accepted | Bound each Council run to one comparison round, five deterministic tools, 700 output tokens, and 6.5 seconds. | Makes latency and cost predictable and prevents open-ended agent loops. |
 | D-014 | 2026-10-29 | Accepted | Use the model only to rewrite qualitative explanations from a strict structured schema; reject model text containing quantitative claims and fall back to deterministic copy. | Keeps all financial facts traceable to tools. |
 | D-015 | 2026-10-29 | Accepted | Savings-goal proposals are owner-bound, version-bound, single-use server records and are rechecked against current goal state at approval time. | Prevents cross-user approval, replay, and stale writes. |
-
-Statuses are **Proposed**, **Accepted**, **Superseded**, or **Rejected**. Product constraints stated in the project brief are recorded as accepted; implementation choices remain proposed until the team confirms them.
-
-## Working assumptions
-
-- The demo's primary locale is English Canada, currency is CAD, and Canadian spelling is used.
-- A single fictional user profile is sufficient for the judged MVP.
-- Supabase Auth identifies local demo users; production identity assurance and regulated-data storage remain out of scope.
-- XP is a motivational progress mechanic with no monetary value or redeemable reward.
-- Council personas share the same verified financial snapshot and tools; their tone and focus differ, not the underlying facts.
-- Credit-utilization output is educational and should avoid claims about exact credit-score impact.
-
-## Open decisions
-
-| ID | Needed by | Question | Default if unanswered |
-| --- | --- | --- | --- |
-| O-003 | Before deployment | Where will the web client and API be hosted for judging? | Managed Next.js hosting plus a small managed Python service. |
-| O-005 | Before design implementation | Are there approved brand assets, colours, typefaces, or a reference design? | Accessible neutral palette and system fonts; do not invent a final brand system. |
-| O-006 | Before content freeze | Who approves Canadian financial-literacy wording and disclaimers? | Plain-language educational copy reviewed by the team; avoid individualized advice. |
-| O-007 | Before judging rehearsal | Will the demo require offline operation? | Provide seeded data and a scripted Council fallback for the critical path. |
-| O-008 | Before shared deployment | Which Supabase JWT signing mode will the shared project use? | Configure the backend for the project's verified signing key; the public demo token remains development-only. |
-
-## Change template
-
-When adding a decision, include the date, status, decision, alternatives considered, reason, and consequences. Link to an issue or pull request when one exists.
+| D-016 | 2026-10-29 | Accepted | FastAPI verifies Supabase access tokens with the project's public JWKS (ES256/RS256 only, cached), checking issuer, audience, role, expiry, and subject. HS256 is accepted only with an explicitly configured legacy secret. Alternative: shared HS256 secret (rejected; hosted project uses ECC P-256 keys and needs no shared secret). | No secret on either tier; key rotation is picked up automatically. |
+| D-017 | 2026-10-29 | Accepted | Every financial route requires an authenticated identity, and the in-memory store checks ownership on each operation. Until PEN-002, the fictional data set is owned by the development demo identity plus one configured Supabase user (`PENNY_DEMO_OWNER_USER_ID`). | Closes audit finding F-01 and gives sign-in a real end-to-end test before persistence exists. Consequence: other users get 403, and all owners share one in-memory data set. |
+| D-018 | 2026-10-29 | Accepted | The demo bearer token has no default, is refused at startup outside development, and the frontend uses it only with `NEXT_PUBLIC_DEMO_MODE=true`. | Prevents an accidental public credential in deployed environments. |
+| D-019 | 2026-10-29 | Accepted | Frontend uses a token-based design system (forest #123C35, emerald accent, ivory canvas, sage surfaces, gold secondary) defined once in `app/globals.css` `@theme`, with components split by view under `components/penny/`. No new dependencies: animation is CSS-only, toasts are a small local provider. Alternatives: an animation or toast library (rejected; unnecessary for the MVP). | Resolves O-005 for the demo; keeps styling consistent and reviewable. |
+| D-020 | 2026-10-29 | Accepted | Transaction search and filters run client-side over the already-loaded dashboard; deletes are confirmed and offer Undo by re-creating the record through the existing create endpoint. | No new API surface; Undo creates a new id, so restored goals lose their original id and status. |
+| D-021 | 2026-10-29 | Accepted | Add 13 months of deterministic fictional history (Sep 2025 – Sep 2026) for the demo user in `app/history_fixtures.py`; dashboard and mutation routes accept an optional `month`, and `GET /api/v1/history` returns monthly totals for up to 24 months. October 2026 data and totals are unchanged. | Lets people browse past months and years without inventing values in the UI; all history totals are computed by the backend. Consequence: the transaction list in a dashboard snapshot is now that month’s only. |
+| D-022 | 2026-10-29 | Accepted | Charts are hand-built SVG (no chart library) using a palette validated for colour-vision separation and contrast in light and dark; category colours are fixed per category, never by rank. Dark mode uses its own token values. Layout density (Simple / Compact / Detailed) and theme are per-device preferences applied before first paint. | No new dependency; accessible charts with tooltips and table views; no theme flash. |
+| D-023 | 2026-10-29 | Accepted | Small API additions for missing features: copy budgets between months, add a contribution to a goal (capped at the remaining target), idempotent mission completion with an XP total, and a stateless credit-utilization calculator. | Each is deterministic, owner-checked (except the stateless calculator) and covered by tests; persistence still arrives with PEN-002. |

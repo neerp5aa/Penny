@@ -32,7 +32,7 @@ The Council session table reserves ownership and lifecycle metadata. The hackath
 - `frontend/` owns presentation, accessibility, Supabase sign-in, and mutation forms. It never calculates financial totals; editable CAD strings are converted to cents with `BigInt` before requests.
 - `backend/app/domain/finance.py` is the authoritative calculation layer. Pure functions accept and return Python integers representing cents.
 - `backend/app/dashboard_store.py` owns the fictional demo state and returns a complete authoritative snapshot after each create, update, or delete. Its state resets when the process restarts.
-- `backend/app/main.py` exposes typed health, dashboard, calculation, CRUD, Council, and approval responses. Council endpoints validate the bearer identity before loading user-owned context.
+- `backend/app/main.py` exposes typed health, dashboard, calculation, CRUD, Council, and approval responses. Every financial endpoint validates the bearer identity (Supabase JWT via JWKS, or the development-only demo token) and passes the user id to the store, which rejects non-owners with 403.
 - `backend/app/council/` owns orchestration, deterministic tools, prompt-injection filtering, provider fallback, claim verification, and single-use goal proposals. Provider output cannot mutate state.
 - `supabase/migrations/` owns schema evolution. The browser receives only the publishable key; service-role credentials must remain server-side.
 

@@ -1,3 +1,5 @@
+import { getSupabaseAccessToken } from "./supabase";
+
 export type Account = { id: string; name: string; account_type: "chequing" | "savings" | "credit"; balance_cents: number; credit_limit_cents: number | null };
 export type Category = { id: string; name: string; colour_token: string };
 export type Transaction = { id: string; description: string; category: string; account_id: string; category_id: string | null; amount_cents: number; kind: "income" | "spending"; occurred_on: string };
@@ -5,8 +7,11 @@ export type Budget = { id: string; category_id: string; category_name: string; m
 export type SavingsGoal = { id: string; name: string; target_cents: number; current_cents: number; target_date: string | null; status: "active" | "completed" | "paused"; progress_basis_points: number };
 export type Mission = { id: string; title: string; description: string; xp_reward: number; completed: boolean };
 export type CategorySpending = { category_id: string | null; category_name: string; colour_token: string; spent_cents: number; share_basis_points: number };
+export type DailySpending = { day: string; spent_cents: number; cumulative_cents: number };
 export type Dashboard = {
   active_month: string;
+  current_month: string;
+  data_months: string[];
   profile: { display_name: string; school: string; city: string; province: string; currency: "CAD"; is_fictional: true };
   accounts: Account[];
   categories: Category[];
@@ -14,10 +19,23 @@ export type Dashboard = {
   budgets: Budget[];
   savings_goals: SavingsGoal[];
   missions: Mission[];
+  xp_total: number;
   category_spending: CategorySpending[];
+  daily_spending: DailySpending[];
   credit: { account_id: string; account_name: string; balance_cents: number; credit_limit_cents: number; utilization_basis_points: number };
   totals: { available_balance_cents: number; income_cents: number; spending_cents: number; cash_flow_cents: number; total_budget_cents: number; budget_remaining_cents: number; savings_contributions_cents: number };
 };
+
+export type HistoryMonth = { month: string; income_cents: number; spending_cents: number; cash_flow_cents: number; budget_cents: number; transaction_count: number };
+export type History = {
+  start: string;
+  end: string;
+  months: HistoryMonth[];
+  totals: { income_cents: number; spending_cents: number; cash_flow_cents: number; months_with_activity: number; average_spending_cents: number };
+  categories: CategorySpending[];
+  data_months: string[];
+};
+export type CreditUtilization = { balance_cents: number; credit_limit_cents: number; utilization_basis_points: number; within_common_guideline: boolean };
 
 export type TransactionWrite = Omit<Transaction, "id" | "category">;
 export type GoalWrite = Pick<SavingsGoal, "name" | "target_cents" | "current_cents" | "target_date">;
@@ -44,46 +62,85 @@ export type CouncilResponse = {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
-async function request(path: string, init?: RequestInit): Promise<Dashboard> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
-  });
-  if (!response.ok) {
-    const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
-    throw new Error(payload?.detail ?? `Request failed with status ${response.status}`);
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "ApiError";
   }
-  return response.json() as Promise<Dashboard>;
+
+  get needsSignIn(): boolean {
+    return this.status === 401 || this.status === 403;
+  }
 }
 
-async function councilRequest<T>(path: string, init: RequestInit): Promise<T> {
-  const token = process.env.NEXT_PUBLIC_DEMO_AUTH_TOKEN ?? "penny-local-demo-token";
+export type TokenSources = {
+  sessionToken: () => Promise<string | null>;
+  demoMode: boolean;
+  demoToken: string | undefined;
+};
+
+/**
+ * Picks the bearer token for API calls: the Supabase session first, then the fictional demo
+ * token only when demo mode is explicitly enabled. Never invents a token.
+ */
+export async function resolveAccessToken(sources: TokenSources): Promise<string> {
+  const sessionToken = await sources.sessionToken();
+  if (sessionToken) return sessionToken;
+  if (sources.demoMode && sources.demoToken) return sources.demoToken;
+  throw new ApiError("Sign in to view your Penny dashboard.", 401);
+}
+
+const browserTokenSources: TokenSources = {
+  sessionToken: getSupabaseAccessToken,
+  demoMode: process.env.NEXT_PUBLIC_DEMO_MODE === "true",
+  demoToken: process.env.NEXT_PUBLIC_DEMO_AUTH_TOKEN,
+};
+
+async function authorizedRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = await resolveAccessToken(browserTokenSources);
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
-      ...init.headers,
+      ...init?.headers,
     },
   });
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
-    throw new Error(payload?.detail ?? `Council request failed with status ${response.status}`);
+    throw new ApiError(payload?.detail ?? `Request failed with status ${response.status}`, response.status);
   }
   return response.json() as Promise<T>;
 }
 
+const request = (path: string, init?: RequestInit) => authorizedRequest<Dashboard>(path, init);
+const councilRequest = authorizedRequest;
+
+/** Appends the month whose snapshot the API should return (YYYY-MM-01). */
+const inMonth = (path: string, month?: string) => (month ? `${path}${path.includes("?") ? "&" : "?"}month=${encodeURIComponent(month)}` : path);
+
 export const dashboardApi = {
-  load: () => request("/api/v1/dashboard"),
-  createTransaction: (body: TransactionWrite) => request("/api/v1/transactions", { method: "POST", body: JSON.stringify(body) }),
-  updateTransaction: (id: string, body: Partial<TransactionWrite>) => request(`/api/v1/transactions/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
-  deleteTransaction: (id: string) => request(`/api/v1/transactions/${id}`, { method: "DELETE" }),
-  createBudget: (body: { category_id: string; month_start: string; limit_cents: number }) => request("/api/v1/budgets", { method: "POST", body: JSON.stringify(body) }),
-  updateBudget: (id: string, limit_cents: number) => request(`/api/v1/budgets/${id}`, { method: "PATCH", body: JSON.stringify({ limit_cents }) }),
-  deleteBudget: (id: string) => request(`/api/v1/budgets/${id}`, { method: "DELETE" }),
-  createGoal: (body: GoalWrite) => request("/api/v1/savings-goals", { method: "POST", body: JSON.stringify(body) }),
-  updateGoal: (id: string, body: Partial<GoalWrite> & { status?: SavingsGoal["status"] }) => request(`/api/v1/savings-goals/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
-  deleteGoal: (id: string) => request(`/api/v1/savings-goals/${id}`, { method: "DELETE" }),
+  load: (month?: string) => request(inMonth("/api/v1/dashboard", month)),
+  createTransaction: (body: TransactionWrite, month?: string) => request(inMonth("/api/v1/transactions", month), { method: "POST", body: JSON.stringify(body) }),
+  updateTransaction: (id: string, body: Partial<TransactionWrite>, month?: string) => request(inMonth(`/api/v1/transactions/${id}`, month), { method: "PATCH", body: JSON.stringify(body) }),
+  deleteTransaction: (id: string, month?: string) => request(inMonth(`/api/v1/transactions/${id}`, month), { method: "DELETE" }),
+  createBudget: (body: { category_id: string; month_start: string; limit_cents: number }, month?: string) => request(inMonth("/api/v1/budgets", month), { method: "POST", body: JSON.stringify(body) }),
+  updateBudget: (id: string, limit_cents: number, month?: string) => request(inMonth(`/api/v1/budgets/${id}`, month), { method: "PATCH", body: JSON.stringify({ limit_cents }) }),
+  deleteBudget: (id: string, month?: string) => request(inMonth(`/api/v1/budgets/${id}`, month), { method: "DELETE" }),
+  copyBudgets: (fromMonth: string, toMonth: string) => request("/api/v1/budgets/copy", { method: "POST", body: JSON.stringify({ from_month: fromMonth, to_month: toMonth }) }),
+  createGoal: (body: GoalWrite, month?: string) => request(inMonth("/api/v1/savings-goals", month), { method: "POST", body: JSON.stringify(body) }),
+  updateGoal: (id: string, body: Partial<GoalWrite> & { status?: SavingsGoal["status"] }, month?: string) => request(inMonth(`/api/v1/savings-goals/${id}`, month), { method: "PATCH", body: JSON.stringify(body) }),
+  deleteGoal: (id: string, month?: string) => request(inMonth(`/api/v1/savings-goals/${id}`, month), { method: "DELETE" }),
+  contributeToGoal: (id: string, amount_cents: number, month?: string) => request(inMonth(`/api/v1/savings-goals/${id}/contributions`, month), { method: "POST", body: JSON.stringify({ amount_cents }) }),
+  completeMission: (id: string, month?: string) => request(inMonth(`/api/v1/missions/${id}/complete`, month), { method: "POST" }),
+};
+
+export const historyApi = {
+  load: (start: string, end: string) => authorizedRequest<History>(`/api/v1/history?start=${start}&end=${end}`),
+};
+
+export const calculationsApi = {
+  creditUtilization: (balance_cents: number, credit_limit_cents: number) => authorizedRequest<CreditUtilization>("/api/v1/calculations/credit-utilization", { method: "POST", body: JSON.stringify({ balance_cents, credit_limit_cents }) }),
 };
 
 export const councilApi = {

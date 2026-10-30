@@ -1,9 +1,201 @@
 @import "tailwindcss";
 
+/* data-theme and data-density are set on <html> before first paint (see app/layout.tsx). */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+@custom-variant compact (&:where([data-density="compact"], [data-density="compact"] *));
+@custom-variant simple (&:where([data-density="simple"], [data-density="simple"] *));
+
+/*
+ * Penny design tokens. Utilities are generated from these names, e.g. bg-primary,
+ * text-ink-muted, border-line. Text-on-white colours meet WCAG AA (4.5:1) or better;
+ * the "-fill" accents are for bars and icons only.
+ */
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  --color-canvas: #f7f8f5;
+  --color-surface: #ffffff;
+  --color-sage: #e5ece8;
+  --color-sage-soft: #f0f4f1;
+  --color-line: #dfe6e2;
+  --color-line-strong: #c5d1cb;
+
+  --color-ink: #1f2933;
+  --color-ink-muted: #4f5b67;
+  --color-ink-subtle: #5f6b78;
+
+  --color-primary: #123c35;
+  --color-primary-hover: #0b2a25;
+  --color-primary-soft: #dcebe5;
+  --color-on-primary: #ffffff;
+  /* Large brand panels (balance card, Council recommendation). Deep green in both themes. */
+  --color-hero: #123c35;
+  --color-overlay: rgb(18 60 53 / 0.4);
+
+  --color-accent: #2d8b74;
+  --color-accent-strong: #1d6b58;
+  --color-accent-soft: #e3f1ec;
+
+  --color-gold: #d6a65d;
+  --color-gold-strong: #855f1c;
+  --color-gold-soft: #f8efdf;
+
+  --color-danger: #b42318;
+  --color-danger-hover: #912018;
+  --color-on-danger: #ffffff;
+  --color-danger-soft: #fdecea;
+  --color-danger-soft-hover: #fbd9d5;
+  --color-info: #2f6690;
+  --color-info-soft: #e7eff6;
+
+  --radius-card: 1.25rem;
+  --shadow-card: 0 1px 2px rgb(18 60 53 / 0.04), 0 2px 8px rgb(18 60 53 / 0.04);
+  --shadow-raised: 0 8px 24px rgb(18 60 53 / 0.1), 0 2px 6px rgb(18 60 53 / 0.06);
+
+  --animate-enter: enter 220ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  --animate-fade: fade 180ms ease-out both;
+}
+
+/*
+ * Chart colours, validated with the dataviz palette checker (lightness band, chroma,
+ * colour-vision separation, contrast) for light on #ffffff and dark on #16201c.
+ * Categories keep a fixed slot per category (colour follows the entity, never its rank).
+ */
+:root {
+  --chart-in: #0e9470;
+  --chart-out: #e07b2e;
+  --chart-net: #1f2933;
+  --chart-cat-1: #2a78d6;
+  --chart-cat-2: #eb6834;
+  --chart-cat-3: #1baf7a;
+  --chart-cat-4: #eda100;
+  --chart-cat-5: #e87ba4;
+  --chart-cat-6: #008300;
+  --chart-cat-7: #6250d6;
+  --chart-other: #9aa5b1;
+  --chart-grid: #e6ebe8;
+  --chart-axis: #c5d1cb;
+  --chart-reference: #9aa5b1;
+}
+
+/* Dark palette: its own validated steps, not an automatic inversion. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-canvas: #0f1714;
+  --color-surface: #16201c;
+  --color-sage: #24322c;
+  --color-sage-soft: #1b2722;
+  --color-line: #2a3832;
+  --color-line-strong: #3b4b44;
+  --color-ink: #e7ece9;
+  --color-ink-muted: #b8c4be;
+  --color-ink-subtle: #96a59e;
+  --color-primary: #8fd1bd;
+  --color-primary-hover: #a9dccb;
+  --color-primary-soft: #1f3a33;
+  --color-on-primary: #0b2a25;
+  --color-hero: #1b4a40;
+  --color-overlay: rgb(0 0 0 / 0.6);
+  --color-accent: #4fb397;
+  --color-accent-strong: #7fd0b6;
+  --color-accent-soft: #1c3a31;
+  --color-gold: #d6a65d;
+  --color-gold-strong: #e6c184;
+  --color-gold-soft: #3a2f1c;
+  --color-danger: #f0857a;
+  --color-danger-hover: #f5a097;
+  --color-on-danger: #2a0b08;
+  --color-danger-soft: #3d1f1c;
+  --color-danger-soft-hover: #4d2723;
+  --color-info: #8db8dc;
+  --color-info-soft: #1c2c3a;
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow-raised: 0 10px 30px rgb(0 0 0 / 0.45), 0 2px 6px rgb(0 0 0 / 0.3);
+
+  --chart-in: #1ea57e;
+  --chart-out: #d4702a;
+  --chart-net: #e7ece9;
+  --chart-cat-1: #3987e5;
+  --chart-cat-2: #d95926;
+  --chart-cat-3: #199e70;
+  --chart-cat-4: #c98500;
+  --chart-cat-5: #d55181;
+  --chart-cat-6: #008300;
+  --chart-cat-7: #9085e9;
+  --chart-other: #6b7a73;
+  --chart-grid: #26332d;
+  --chart-axis: #3b4b44;
+  --chart-reference: #6b7a73;
+}
+
+/* Smooth colour change when the theme is switched (never on first paint). */
+:root.theme-transition, :root.theme-transition * {
+  transition: background-color 200ms ease, border-color 200ms ease, color 200ms ease !important;
+}
+
+/* View switches cross-fade where the browser supports view transitions. */
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: 160ms; }
+
+@keyframes enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes fade-out {
+  to { opacity: 0; }
+}
+@keyframes dialog-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes dialog-out {
+  to { opacity: 0; transform: translateY(8px) scale(0.98); }
+}
+
 :root { color-scheme: light; }
 * { box-sizing: border-box; }
-html { background: #f6f8f5; }
-body { margin: 0; color: #17221c; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+html { background: var(--color-canvas); -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
 button, a { -webkit-tap-highlight-color: transparent; }
-:focus-visible { outline: 3px solid #059669; outline-offset: 3px; }
-@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
+:focus-visible { outline: 3px solid var(--color-accent); outline-offset: 2px; }
+
+/* Radix dialogs expose data-state; Radix waits for the closing animation before unmounting. */
+.dialog-overlay { background: var(--color-overlay); }
+.dialog-overlay[data-state="open"] { animation: fade 180ms ease-out; }
+.dialog-overlay[data-state="closed"] { animation: fade-out 150ms ease-in forwards; }
+.dialog-content[data-state="open"] { animation: dialog-in 220ms cubic-bezier(0.2, 0.7, 0.2, 1); }
+.dialog-content[data-state="closed"] { animation: dialog-out 150ms ease-in forwards; }
+
+/* Thin, visible scrollbars for in-card scroll regions. */
+.scroll-area {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+  scroll-behavior: smooth;
+}
+.scroll-area::-webkit-scrollbar { width: 10px; }
+.scroll-area::-webkit-scrollbar-thumb {
+  background: var(--color-line-strong);
+  border: 3px solid var(--color-surface);
+  border-radius: 999px;
+}
+
+.tabular { font-variant-numeric: tabular-nums; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

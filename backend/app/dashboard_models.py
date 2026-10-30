@@ -66,8 +66,16 @@ class DashboardTotals(Summary):
     total_budget_cents: int = Field(ge=0)
 
 
+class DailySpending(DashboardModel):
+    day: date
+    spent_cents: int = Field(ge=0)
+    cumulative_cents: int = Field(ge=0)
+
+
 class DashboardResponse(DashboardModel):
     active_month: date
+    current_month: date
+    data_months: list[date]
     profile: DemoUser
     accounts: list[Account]
     categories: list[Category]
@@ -75,7 +83,9 @@ class DashboardResponse(DashboardModel):
     budgets: list[MonthlyBudget]
     savings_goals: list[Goal]
     missions: list[Mission]
+    xp_total: int = Field(ge=0)
     category_spending: list[CategorySpending]
+    daily_spending: list[DailySpending]
     credit: CreditSnapshot
     totals: DashboardTotals
 
@@ -121,3 +131,50 @@ class GoalPatch(DashboardModel):
     current_cents: int | None = Field(default=None, ge=0)
     target_date: date | None = None
     status: Literal["active", "completed", "paused"] | None = None
+
+
+class BudgetCopyRequest(DashboardModel):
+    from_month: date
+    to_month: date
+
+
+class GoalContributionRequest(DashboardModel):
+    amount_cents: int = Field(gt=0)
+
+
+class HistoryMonth(DashboardModel):
+    month: date
+    income_cents: int = Field(ge=0)
+    spending_cents: int = Field(ge=0)
+    cash_flow_cents: int
+    budget_cents: int = Field(ge=0)
+    transaction_count: int = Field(ge=0)
+
+
+class HistoryTotals(DashboardModel):
+    income_cents: int = Field(ge=0)
+    spending_cents: int = Field(ge=0)
+    cash_flow_cents: int
+    months_with_activity: int = Field(ge=0)
+    average_spending_cents: int = Field(ge=0)
+
+
+class HistoryResponse(DashboardModel):
+    start: date
+    end: date
+    months: list[HistoryMonth]
+    totals: HistoryTotals
+    categories: list[CategorySpending]
+    data_months: list[date]
+
+
+class CreditUtilizationRequest(DashboardModel):
+    balance_cents: int = Field(ge=0)
+    credit_limit_cents: int = Field(gt=0)
+
+
+class CreditUtilizationResponse(DashboardModel):
+    balance_cents: int
+    credit_limit_cents: int
+    utilization_basis_points: int = Field(ge=0)
+    within_common_guideline: bool
