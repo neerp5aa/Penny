@@ -2,15 +2,16 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronLeft, ChevronRight, LayoutList, LogOut, Menu, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Plus, ShieldCheck, SlidersHorizontal, Sun, Undo2 } from "lucide-react";
+import { LayoutList, LogOut, Menu, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Plus, ShieldCheck, SlidersHorizontal, Sun } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { Dashboard } from "@/lib/api";
-import { addMonths, formatMonth, greeting } from "@/lib/format";
+import { formatMonth, greeting } from "@/lib/format";
 import { getSupabaseUserEmail, signOutOfSupabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 import { THEME_OPTIONS, type ThemeSetting, usePreferences } from "./preferences";
+import { type PeriodRange, PeriodPicker } from "./period-picker";
 import { cad, NAVIGATION, type View } from "./shared";
 import { AskBar } from "./today-view";
 
@@ -143,32 +144,6 @@ export function MobileNavigation({ active, onNavigate }: { active: View; onNavig
 
 // ------------------------------------------------------------------ month switcher
 
-export function MonthSwitcher({ dashboard, loading, onChangeMonth }: { dashboard: Dashboard; loading: boolean; onChangeMonth: (month: string) => void }) {
-  const month = dashboard.active_month;
-  const earliest = dashboard.data_months[0] ?? month;
-  const isCurrent = month === dashboard.current_month;
-  const months = [...dashboard.data_months].reverse();
-  return (
-    <div className="flex items-center gap-1.5" aria-busy={loading}>
-      <div className="flex items-center rounded-xl border border-line bg-surface shadow-[var(--shadow-card)]">
-        <button type="button" onClick={() => onChangeMonth(addMonths(month, -1))} disabled={month <= earliest} aria-label="Previous month" className="grid size-10 place-items-center rounded-l-xl text-ink-muted transition-colors hover:bg-sage-soft hover:text-ink disabled:opacity-35"><ChevronLeft className="size-4" /></button>
-        <label>
-          <span className="sr-only">Choose a month</span>
-          <select value={month} onChange={(event) => onChangeMonth(event.target.value)} className="h-10 cursor-pointer appearance-none border-x border-line bg-transparent px-3 text-sm font-semibold text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent">
-            {months.map((value) => <option key={value} value={value}>{formatMonth(value)}</option>)}
-          </select>
-        </label>
-        <button type="button" onClick={() => onChangeMonth(addMonths(month, 1))} disabled={isCurrent} aria-label="Next month" className="grid size-10 place-items-center rounded-r-xl text-ink-muted transition-colors hover:bg-sage-soft hover:text-ink disabled:opacity-35"><ChevronRight className="size-4" /></button>
-      </div>
-      {!isCurrent && (
-        <button type="button" onClick={() => onChangeMonth(dashboard.current_month)} className="inline-flex h-10 animate-fade items-center gap-1 rounded-xl px-2.5 text-xs font-semibold text-accent-strong hover:bg-accent-soft">
-          <Undo2 className="size-3.5" aria-hidden="true" />Back to this month
-        </button>
-      )}
-    </div>
-  );
-}
-
 // ------------------------------------------------------------------ display controls
 
 export function ThemeToggle() {
@@ -222,15 +197,20 @@ export function DisplaySettingsDialog({ open, onOpenChange }: { open: boolean; o
 
 // ------------------------------------------------------------------ header
 
-export function PageHeader({ view, dashboard, monthLoading, onChangeMonth, onAddTransaction, onOpenDisplay, onAsk }: { view: View; dashboard: Dashboard; monthLoading: boolean; onChangeMonth: (month: string) => void; onAddTransaction: () => void; onOpenDisplay: () => void; onAsk: (question: string) => void }) {
+export function PageHeader({ view, dashboard, monthLoading, onChangePeriod, onAddTransaction, onOpenDisplay, onAsk }: { view: View; dashboard: Dashboard; monthLoading: boolean; onChangePeriod: (range: PeriodRange) => void; onAddTransaction: () => void; onOpenDisplay: () => void; onAsk: (question: string) => void }) {
   const item = NAVIGATION.find((entry) => entry.id === view) ?? NAVIGATION[0];
   const firstName = dashboard.profile.display_name.split(" ")[0];
-  const isCurrent = dashboard.active_month === dashboard.current_month;
-  const pastHome = view === "today" && !isCurrent;
-  const title = view === "today" ? (isCurrent ? `${greeting()}, ${firstName}.` : `${formatMonth(dashboard.active_month)} in review`) : item.title;
+  const { period } = dashboard;
+  // A period that reaches into this month is "now"; anything earlier is a look back.
+  const includesNow = period.end >= dashboard.current_month;
+  const pastHome = view === "today" && !includesNow;
+  const title = view === "today" ? (includesNow ? `${greeting()}, ${firstName}.` : `${period.label} in review`) : item.title;
   const kept = dashboard.totals.cash_flow_cents;
-  const summary = `You have ${cad(dashboard.home.available_cents)} available and ${kept >= 0 ? `you’re on track to save ${cad(kept)}` : `you’re ${cad(-kept)} over`} this month.`;
-  const description = pastHome ? "You’re looking back at a past month. Balances and goals show today’s values." : view === "today" ? summary : item.description;
+  const saved = period.phrase === "this month"
+    ? (kept >= 0 ? `you’re on track to save ${cad(kept)}` : `you’re ${cad(-kept)} over`)
+    : (kept >= 0 ? `you kept ${cad(kept)}` : `you spent ${cad(-kept)} more than you earned`);
+  const summary = `You have ${cad(dashboard.home.available_cents)} available and ${saved} ${period.phrase}.`;
+  const description = pastHome ? `Looking back at ${period.label}. Balances and goals show today’s values.` : view === "today" ? summary : item.description;
   const showMonth = MONTH_VIEWS.includes(view);
   const showAdd = view === "today" || view === "spending";
   return (
@@ -257,7 +237,7 @@ export function PageHeader({ view, dashboard, monthLoading, onChangeMonth, onAdd
         </div>
         {showMonth ? (
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <MonthSwitcher dashboard={dashboard} loading={monthLoading} onChangeMonth={onChangeMonth} />
+            <PeriodPicker dashboard={dashboard} loading={monthLoading} onChange={onChangePeriod} />
             <Badge tone="gold">Fictional data</Badge>
           </div>
         ) : (

@@ -5,8 +5,7 @@
 The app has seven sections:
 
 - **Today (home):** total cash with trend, safe to spend, credit used, monthly savings against goals, a spending overview with a "vs last month" tip, recent transactions, upcoming bills, financial health with the daily Money Score, Penny AI prompts, and a learning streak.
-- **Spending:** budgets, needs versus wants, auto-categorized transactions with CSV export, and 6- or 12-month trends.
-- **Recurring:** bills set up once (auto-paid on their due date, or marked paid yourself), the fixed monthly total, suggestions from repeating charges, and due-date reminders.
+- **Spending:** transactions (search, money in/out, category, a one-day or range date filter, CSV export) with soft Need/Want and Recurring tags, then budgets and trends. A Recurring tab lists every bill with its payment history and an auto-paid or mark-paid choice. A period picker shows any month, preset range, or custom dates.
 - **Goals:** savings goals with the monthly amount needed to hit each target date.
 - **Invest:** education only. A foundations checklist, TFSA, RRSP and FHSA explained with 2026 limits, and a compounding-and-fees explorer.
 - **Learn:** short lessons with quizzes on budgeting, saving, tax, credit and investing, plus XP, levels, a learning streak and challenges.

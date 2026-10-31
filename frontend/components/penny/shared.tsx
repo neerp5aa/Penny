@@ -1,7 +1,7 @@
 "use client";
 
 import { useId } from "react";
-import { Bot, GraduationCap, Home, ReceiptText, Repeat, Settings, Target, TrendingUp, type LucideIcon } from "lucide-react";
+import { Bot, GraduationCap, Home, ReceiptText, Settings, Target, TrendingUp, type LucideIcon } from "lucide-react";
 import { Label } from "@/components/ui/input";
 import { ApiError } from "@/lib/api";
 import { formatCad } from "@/lib/money";
@@ -12,8 +12,7 @@ export type View = "today" | "spending" | "recurring" | "goals" | "invest" | "le
 /** `primary` items sit in the phone tab bar; the rest live under "More". */
 export const NAVIGATION: { id: View; label: string; title: string; description: string; icon: LucideIcon; primary: boolean }[] = [
   { id: "today", label: "Today", title: "Today", description: "Your Money Score, streaks, and what’s coming up.", icon: Home, primary: true },
-  { id: "spending", label: "Spending", title: "Spending", description: "Budgets, transactions, and where your money goes.", icon: ReceiptText, primary: true },
-  { id: "recurring", label: "Recurring", title: "Recurring", description: "Every bill and subscription, and what’s due next.", icon: Repeat, primary: false },
+  { id: "spending", label: "Spending", title: "Spending", description: "Transactions, recurring bills, and budgets.", icon: ReceiptText, primary: true },
   { id: "goals", label: "Goals", title: "Goals", description: "Save on purpose and see what it takes each month.", icon: Target, primary: true },
   { id: "invest", label: "Invest", title: "Invest", description: "Learn how investing works in Canada, at your own pace.", icon: TrendingUp, primary: false },
   { id: "learn", label: "Learn", title: "Learn", description: "Bite-sized lessons on budgeting, saving, tax, and credit.", icon: GraduationCap, primary: false },

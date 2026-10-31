@@ -3,7 +3,7 @@ import { getSupabaseAccessToken } from "./supabase";
 export type AccountType = "chequing" | "savings" | "credit" | "cash" | "investment" | "other";
 export type Account = { id: string; name: string; account_type: AccountType; balance_cents: number; credit_limit_cents: number | null };
 export type Category = { id: string; name: string; colour_token: string; kind: "income" | "spending"; parent_id: string | null; custom: boolean };
-export type Transaction = { id: string; description: string; category: string; account_id: string; category_id: string | null; amount_cents: number; kind: "income" | "spending"; occurred_on: string; necessity: "need" | "want" | null; auto_categorized: boolean };
+export type Transaction = { id: string; description: string; category: string; account_id: string; category_id: string | null; amount_cents: number; kind: "income" | "spending"; occurred_on: string; necessity: "need" | "want" | null; auto_categorized: boolean; bill_id: string | null; paid_automatically: boolean | null };
 export type Budget = { id: string; category_id: string; category_name: string; month_start: string; limit_cents: number; spent_cents: number; remaining_cents: number; usage_basis_points: number; carried_over: boolean };
 export type SavingsGoal = { id: string; name: string; target_cents: number; current_cents: number; target_date: string | null; status: "active" | "completed" | "paused"; progress_basis_points: number; monthly_needed_cents: number | null };
 export type Mission = { id: string; title: string; description: string; xp_reward: number; completed: boolean };
@@ -28,15 +28,19 @@ export type BillFrequency = "weekly" | "biweekly" | "monthly" | "yearly";
 export type Bill = { id: string; name: string; amount_cents: number; category_id: string | null; account_id: string; frequency: BillFrequency; next_due: string; auto_record: boolean; last_paid_on: string | null };
 export type PayFrequency = "weekly" | "biweekly" | "semimonthly" | "monthly" | "custom";
 export type PaySchedule = { name: string; amount_cents: number; account_id: string; frequency: PayFrequency; next_payday: string; interval_days: number | null };
-export type RecurringExpense = { id: string; name: string; category_name: string | null; amount_cents: number; monthly_cents: number; frequency: BillFrequency; next_due: string; days_until_due: number; kind: "bill" | "subscription"; necessity: "need" | "want"; auto_record: boolean };
+export type RecurringExpense = { id: string; name: string; category_name: string | null; amount_cents: number; monthly_cents: number; frequency: BillFrequency; next_due: string; days_until_due: number; kind: "bill" | "subscription"; auto_record: boolean; last_paid_on: string | null; payment_count: number };
 export type RecurringSuggestion = { name: string; category_id: string | null; amount_cents: number; next_due: string };
-export type RecurringSummary = { items: RecurringExpense[]; suggestions: RecurringSuggestion[]; fixed_monthly_cents: number; needs_monthly_cents: number; wants_monthly_cents: number; due_next_7_days_cents: number; due_before_payday_cents: number; share_of_income_basis_points: number | null; methodology: string };
+export type RecurringSummary = { items: RecurringExpense[]; suggestions: RecurringSuggestion[]; fixed_monthly_cents: number; subscriptions_monthly_cents: number; due_next_7_days_cents: number; due_before_payday_cents: number; share_of_income_basis_points: number | null; methodology: string };
+export type BillHistory = { bill: Bill; payments: Transaction[]; payment_count: number; total_paid_cents: number; paid_this_year_cents: number; average_cents: number; auto_paid_count: number };
 export type LessonTrack = "budgeting" | "saving" | "tax" | "credit" | "investing";
 export type Lesson = { id: string; track: LessonTrack; title: string; xp_reward: number; completed: boolean };
 export type LearningProgress = { xp_total: number; level: number; level_xp: number; level_size_xp: number; streak_days: number; completed_today: boolean; week_activity: boolean[]; next_lesson: Lesson | null; lessons: Lesson[] };
 export type FoundationCheck = { id: string; title: string; status: "met" | "in_progress" | "not_met"; detail: string };
+/** The date range a dashboard covers. `phrase` reads after a verb: "spent $X this month". */
+export type Period = { start: string; end: string; label: string; phrase: string; single_month: boolean; month_count: number };
 export type Dashboard = {
   active_month: string;
+  period: Period;
   current_month: string;
   data_months: string[];
   profile: { display_name: string; school: string; city: string; province: string; currency: "CAD"; is_fictional: true };
@@ -77,7 +81,9 @@ export type Growth = { points: { year: number; contributed_cents: number; balanc
 export type CategorySuggestion = { category_id: string | null; category_name: string | null; necessity: "need" | "want" | null; matched: string | null };
 export type CreditUtilization = { balance_cents: number; credit_limit_cents: number; utilization_basis_points: number; within_common_guideline: boolean };
 
-export type TransactionWrite = Omit<Transaction, "id" | "category" | "necessity" | "auto_categorized">;
+export type TransactionWrite = Omit<Transaction, "id" | "category" | "necessity" | "auto_categorized" | "bill_id" | "paid_automatically"> & { repeat?: { frequency: BillFrequency; next_due: string | null; auto_record: boolean } | null };
+/** One purchase or deposit across several accounts; the API saves one transaction per account. */
+export type SplitTransactionWrite = Omit<TransactionWrite, "account_id" | "amount_cents"> & { splits: { account_id: string; amount_cents: number }[] };
 export type GoalWrite = Pick<SavingsGoal, "name" | "target_cents" | "current_cents" | "target_date">;
 export type CoachRole = "user" | "assistant";
 export type CoachFact = { label: string; display: string; cents: number | null; basis_points: number | null; source: string };
@@ -156,7 +162,9 @@ const inMonth = (path: string, month?: string) => (month ? `${path}${path.includ
 
 export const dashboardApi = {
   load: (month?: string) => request(inMonth("/api/v1/dashboard", month)),
+  loadPeriod: (start: string, end: string) => request(`/api/v1/dashboard?start=${start}&end=${end}`),
   createTransaction: (body: TransactionWrite, month?: string) => request(inMonth("/api/v1/transactions", month), { method: "POST", body: JSON.stringify(body) }),
+  createSplitTransaction: (body: SplitTransactionWrite, month?: string) => request(inMonth("/api/v1/transactions/split", month), { method: "POST", body: JSON.stringify(body) }),
   updateTransaction: (id: string, body: Partial<TransactionWrite>, month?: string) => request(inMonth(`/api/v1/transactions/${id}`, month), { method: "PATCH", body: JSON.stringify(body) }),
   deleteTransaction: (id: string, month?: string) => request(inMonth(`/api/v1/transactions/${id}`, month), { method: "DELETE" }),
   createBudget: (body: { category_id: string; month_start: string; limit_cents: number }, month?: string) => request(inMonth("/api/v1/budgets", month), { method: "POST", body: JSON.stringify(body) }),
@@ -168,6 +176,7 @@ export const dashboardApi = {
   deleteGoal: (id: string, month?: string) => request(inMonth(`/api/v1/savings-goals/${id}`, month), { method: "DELETE" }),
   contributeToGoal: (id: string, amount_cents: number, month?: string) => request(inMonth(`/api/v1/savings-goals/${id}/contributions`, month), { method: "POST", body: JSON.stringify({ amount_cents }) }),
   completeMission: (id: string, month?: string) => request(inMonth(`/api/v1/missions/${id}/complete`, month), { method: "POST" }),
+  billHistory: (id: string) => authorizedRequest<BillHistory>(`/api/v1/bills/${id}/history`),
   markBillPaid: (id: string, month?: string) => request(inMonth(`/api/v1/bills/${id}/mark-paid`, month), { method: "POST" }),
   createBill: (body: Omit<Bill, "id" | "last_paid_on">, month?: string) => request(inMonth("/api/v1/bills", month), { method: "POST", body: JSON.stringify(body) }),
   updateBill: (id: string, body: Partial<Omit<Bill, "id" | "last_paid_on">>, month?: string) => request(inMonth(`/api/v1/bills/${id}`, month), { method: "PATCH", body: JSON.stringify(body) }),

@@ -11,9 +11,10 @@ import { AddMoneyDialog, BudgetDialog, ConfirmDialog, type ConfirmRequest, GoalD
 import { GoalsView } from "@/components/penny/goals-view";
 import { InvestView } from "@/components/penny/invest-view";
 import { LearnView } from "@/components/penny/learn-view";
-import { type BillInput, RecurringView } from "@/components/penny/recurring-view";
-import { SpendingView } from "@/components/penny/spending-view";
+import type { BillInput } from "@/components/penny/recurring-view";
+import { type SpendingTab, SpendingView } from "@/components/penny/spending-view";
 import { TodayView } from "@/components/penny/today-view";
+import { monthEnd, type PeriodRange } from "@/components/penny/period-picker";
 import { usePreferences } from "@/components/penny/preferences";
 import { cad, describeError, NAVIGATION, type View } from "@/components/penny/shared";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -25,6 +26,10 @@ import { cn } from "@/lib/utils";
 export function DashboardApp() {
   return <ToastProvider><PennyApp /></ToastProvider>;
 }
+
+const periodKey = (range: PeriodRange) => `${range.start}|${range.end}`;
+const monthPeriod = (month: string): PeriodRange => ({ start: month, end: monthEnd(month) });
+const isMonthPeriod = (range: PeriodRange) => range.start.endsWith("-01") && range.end === monthEnd(range.start);
 
 const isView = (value: string): value is View => NAVIGATION.some((item) => item.id === value);
 /** True when keys should go to a form field. A field inside a dialog that is closing doesn't count. */
@@ -79,6 +84,7 @@ function PennyApp() {
   const { resolvedTheme, setTheme } = usePreferences();
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [view, setView] = useState<View>("today");
+  const [spendingTab, setSpendingTab] = useState<SpendingTab>("transactions");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [monthLoading, setMonthLoading] = useState(false);
@@ -90,14 +96,16 @@ function PennyApp() {
   const [addMoneyTarget, setAddMoneyTarget] = useState<SavingsGoal | null>(null);
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const [displayOpen, setDisplayOpen] = useState(false);
-  // Month snapshots already fetched this session, so going back and forth feels instant.
+  // Snapshots already fetched this session, keyed by period, so going back and forth feels instant.
   const cache = useRef(new Map<string, Dashboard>());
-  const latestMonthRequest = useRef<string | null>(null);
+  const latestPeriodRequest = useRef<string | null>(null);
+  const currentPeriod = useRef<PeriodRange | null>(null);
+  useEffect(() => { currentPeriod.current = dashboard?.period ?? null; }, [dashboard]);
 
-  const remember = useCallback((data: Dashboard) => { cache.current.set(data.active_month, data); return data; }, []);
+  const remember = useCallback((data: Dashboard) => { cache.current.set(periodKey(data.period), data); return data; }, []);
 
   const prefetch = useCallback((month: string, earliest: string) => {
-    if (month < earliest || cache.current.has(month)) return;
+    if (month < earliest || cache.current.has(periodKey(monthPeriod(month)))) return;
     dashboardApi.load(month).then(remember).catch(() => undefined);
   }, [remember]);
 
@@ -115,7 +123,12 @@ function PennyApp() {
   }, [remember]);
 
   useEffect(() => {
-    const fromHash = () => { const hash = window.location.hash.slice(1); if (isView(hash)) setView(hash); };
+    const fromHash = () => {
+      const hash = window.location.hash.slice(1);
+      // Recurring lives inside Spending; old #recurring links open that tab.
+      if (hash === "recurring") { setSpendingTab("recurring"); setView("spending"); }
+      else if (isView(hash)) setView(hash);
+    };
     fromHash();
     window.addEventListener("hashchange", fromHash);
     let active = true;
@@ -126,48 +139,65 @@ function PennyApp() {
     return () => { active = false; window.removeEventListener("hashchange", fromHash); };
   }, [prefetch, remember]);
 
-  const navigate = useCallback((next: View) => {
+  const navigate = useCallback((target: View) => {
+    const next = target === "recurring" ? "spending" : target;
+    if (target === "recurring") setSpendingTab("recurring");
     withViewTransition(() => setView(next));
     if (window.location.hash !== `#${next}`) window.history.pushState(null, "", `#${next}`);
     window.scrollTo({ top: 0 });
     window.requestAnimationFrame(() => document.getElementById("page-title")?.focus({ preventScroll: true }));
   }, []);
 
-  /** Shows a month immediately from cache (if seen before), then refreshes it from the API. */
-  const goToMonth = useCallback((month: string) => {
-    if (!dashboard || (month === dashboard.active_month && !monthLoading)) return;
-    const earliest = dashboard.data_months[0] ?? month;
-    if (month < earliest || month > dashboard.current_month) return;
-    latestMonthRequest.current = month;
-    const cached = cache.current.get(month);
+  /** Shows a period immediately from cache (if seen before), then refreshes it from the API. */
+  const goToPeriod = useCallback((range: PeriodRange) => {
+    if (!dashboard) return;
+    const key = periodKey(range);
+    if (key === periodKey(dashboard.period) && !monthLoading) return;
+    const single = isMonthPeriod(range);
+    latestPeriodRequest.current = key;
+    const cached = cache.current.get(key);
     if (cached) withViewTransition(() => setDashboard(cached));
     setMonthLoading(true);
-    dashboardApi.load(month)
+    (single ? dashboardApi.load(range.start) : dashboardApi.loadPeriod(range.start, range.end))
       .then((data) => {
         remember(data);
-        if (latestMonthRequest.current !== month) return;
+        if (latestPeriodRequest.current !== key) return;
         setDashboard(data);
-        prefetch(addMonths(month, -1), earliest);
+        if (single) prefetch(addMonths(range.start, -1), data.data_months[0] ?? range.start);
       })
       .catch((reason: unknown) => {
-        if (latestMonthRequest.current !== month) return;
-        const error = describeError(reason, "That month couldn’t load");
+        if (latestPeriodRequest.current !== key) return;
+        const error = describeError(reason, "That period couldn’t load");
         toast({ title: error.title, description: error.detail, tone: "error" });
       })
-      .finally(() => { if (latestMonthRequest.current === month) setMonthLoading(false); });
+      .finally(() => { if (latestPeriodRequest.current === key) setMonthLoading(false); });
   }, [dashboard, monthLoading, prefetch, remember, toast]);
+
+  const goToMonth = useCallback((month: string) => {
+    if (!dashboard) return;
+    const earliest = dashboard.data_months[0] ?? month;
+    if (month < earliest || month > dashboard.current_month) return;
+    goToPeriod(monthPeriod(month));
+  }, [dashboard, goToPeriod]);
 
   const openMonth = useCallback((month: string) => {
     if (view !== "today") navigate("today");
     goToMonth(month);
   }, [goToMonth, navigate, view]);
 
-  /** Applies a fresh snapshot after an edit: other months' cached copies and charts are refreshed. */
+  /**
+   * Applies a fresh snapshot after an edit. Edits return a one-month snapshot, so when a longer
+   * period is on screen it is reloaded; other cached periods and charts are refreshed.
+   */
   const applyChange = useCallback((data: Dashboard) => {
     cache.current.clear();
-    remember(data);
-    setDashboard(data);
     setHistoryVersion((value) => value + 1);
+    const shown = currentPeriod.current;
+    if (shown && !isMonthPeriod(shown)) {
+      dashboardApi.loadPeriod(shown.start, shown.end).then((range) => setDashboard(remember(range))).catch(() => setDashboard(remember(data)));
+      return;
+    }
+    setDashboard(remember(data));
   }, [remember]);
 
   /** Creates something from inside a form (a category, an account) and returns the new snapshot. */
@@ -291,12 +321,11 @@ function PennyApp() {
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[70] focus:rounded-xl focus:bg-surface focus:px-4 focus:py-3 focus:font-semibold focus:shadow-[var(--shadow-raised)]">Skip to content</a>
       <Sidebar active={view} dashboard={dashboard} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((value) => !value)} onNavigate={navigate} onOpenDisplay={() => setDisplayOpen(true)} />
       <div className={cn("transition-[padding] duration-200", sidebarCollapsed ? "lg:pl-20" : "lg:pl-64")}>
-        <PageHeader view={view} dashboard={dashboard} monthLoading={monthLoading} onChangeMonth={goToMonth} onAddTransaction={() => setTransactionTarget("new")} onOpenDisplay={() => setDisplayOpen(true)} onAsk={askPenny} />
+        <PageHeader view={view} dashboard={dashboard} monthLoading={monthLoading} onChangePeriod={goToPeriod} onAddTransaction={() => setTransactionTarget("new")} onOpenDisplay={() => setDisplayOpen(true)} onAsk={askPenny} />
         <main id="main" tabIndex={-1} className="mx-auto max-w-7xl px-4 pb-[calc(6.5rem+env(safe-area-inset-bottom))] pt-5 focus:outline-none sm:px-6 lg:px-10 lg:pb-12 lg:pt-8">
           <div key={view} className={monthLoading ? "animate-fade opacity-70 transition-opacity duration-200" : "animate-fade transition-opacity duration-200"} aria-busy={monthLoading}>
-            {view === "today" && <TodayView dashboard={dashboard} historyVersion={historyVersion} onNavigate={navigate} onAsk={askPenny} />}
-            {view === "spending" && <SpendingView dashboard={dashboard} historyVersion={historyVersion} onAsk={askPenny} onSelectMonth={goToMonth} onAddTransaction={() => setTransactionTarget("new")} onEditTransaction={setTransactionTarget} onDeleteTransaction={confirmDeleteTransaction} onAddBudget={() => setBudgetTarget("new")} onEditBudget={setBudgetTarget} onCopyBudgets={copyBudgets} />}
-            {view === "recurring" && <RecurringView dashboard={dashboard} onAsk={askPenny} onMarkPaid={markBillPaid} onSave={saveBill} onDelete={confirmDeleteBill} />}
+            {view === "today" && <TodayView dashboard={dashboard} onNavigate={navigate} onAsk={askPenny} />}
+            {view === "spending" && <SpendingView dashboard={dashboard} historyVersion={historyVersion} tab={spendingTab} onTabChange={setSpendingTab} recurring={{ onMarkPaid: markBillPaid, onSave: saveBill, onDelete: confirmDeleteBill }} onAsk={askPenny} onSelectMonth={goToMonth} onAddTransaction={() => setTransactionTarget("new")} onEditTransaction={setTransactionTarget} onDeleteTransaction={confirmDeleteTransaction} onAddBudget={() => setBudgetTarget("new")} onEditBudget={setBudgetTarget} onCopyBudgets={copyBudgets} />}
             {view === "goals" && <GoalsView dashboard={dashboard} onAsk={askPenny} onAdd={() => setGoalTarget("new")} onEdit={setGoalTarget} onAddMoney={setAddMoneyTarget} onComplete={(goal) => void mutate(() => dashboardApi.updateGoal(goal.id, { status: "completed" }, month), `${goal.name} reached`)} />}
             {view === "invest" && <InvestView dashboard={dashboard} onNavigate={navigate} />}
             {view === "learn" && <LearnView dashboard={dashboard} onCompleteLesson={completeLesson} onCompleteMission={completeMission} />}
@@ -372,7 +401,7 @@ function EditDialogs({ dashboard, mutate, onCreate, onOpenMonth, transaction, bu
         onCreate={onCreate}
         onClose={() => setTransactionTarget(null)}
         onRequestDelete={deleteTransaction}
-        onSubmit={(id, body) => saveAndClose(mutate(() => (id ? dashboardApi.updateTransaction(id, body, month) : dashboardApi.createTransaction(body, month)), () => transactionSaved(id, body.occurred_on)), () => setTransactionTarget(null))}
+        onSubmit={(id, body) => saveAndClose(mutate(() => ("splits" in body ? dashboardApi.createSplitTransaction(body, month) : id ? dashboardApi.updateTransaction(id, body, month) : dashboardApi.createTransaction(body, month)), () => transactionSaved(id, body.occurred_on)), () => setTransactionTarget(null))}
       />
       <BudgetDialog
         target={budgetTarget}

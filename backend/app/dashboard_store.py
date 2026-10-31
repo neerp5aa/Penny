@@ -23,6 +23,7 @@ from app.dashboard_features import (
 from app.dashboard_models import (
     AccountWrite,
     Bill,
+    BillHistory,
     BillPatch,
     BillWrite,
     BudgetPatch,
@@ -53,10 +54,13 @@ from app.dashboard_models import (
     NetWorthSnapshot,
     PayCycle,
     PaySchedule,
+    Period,
     RecurringExpense,
     RecurringSummary,
     SpendingClassification,
+    SplitTransactionWrite,
     TransactionPatch,
+    TransactionRepeat,
     TransactionWrite,
 )
 from app.domain.categorize import categorize, necessity
@@ -82,7 +86,8 @@ from app.domain.pay_cycle import (
     paydays,
 )
 from app.domain.pay_cycle import Event as CycleEvent
-from app.domain.recurring import detect_fixed_series
+from app.domain.periods import describe_period, month_end, months_between
+from app.domain.recurring import detect_fixed_series, series_key
 from app.fixtures import build_demo_dashboard
 from app.history_fixtures import build_history_budgets, build_history_transactions
 from app.models import Account, Transaction
@@ -307,6 +312,25 @@ class DashboardStore:
                 ),
             ]
         }
+        # Link past payments to the seeded bills, so each bill has a payment history.
+        for item_id, item in self._transactions.items():
+            match = next(
+                (
+                    bill
+                    for bill in self._bills.values()
+                    if item.kind == "spending"
+                    and (
+                        series_key(item.description) == series_key(bill.name)
+                        or (
+                            item.category_id == bill.category_id
+                            and item.amount_cents == bill.amount_cents
+                        )
+                    )
+                ),
+                None,
+            )
+            if match:
+                self._transactions[item_id] = item.model_copy(update={"bill_id": match.id})
         self._pay_schedule: PaySchedule | None = PaySchedule(
             name="Harbour Books pay",
             amount_cents=126_400,
@@ -752,6 +776,7 @@ class DashboardStore:
             learning = build_learning(self._lessons_completed, mission_xp, self.today())
             return DashboardResponse(
                 active_month=month,
+                period=self._period(month, month_end(month)),
                 current_month=self.active_month,
                 data_months=self._data_months(),
                 profile=self._profile,
@@ -952,7 +977,7 @@ class DashboardStore:
 
     # ------------------------------------------------------------------ bills
 
-    def _record_bill(self, bill: Bill, on: date) -> None:
+    def _record_bill(self, bill: Bill, on: date, automatically: bool) -> None:
         """Record one payment of a bill as a transaction and move it to its next due date."""
         transaction = Transaction(
             id=f"tx-{uuid4().hex[:12]}",
@@ -963,6 +988,8 @@ class DashboardStore:
             amount_cents=bill.amount_cents,
             kind="spending",
             occurred_on=on,
+            bill_id=bill.id,
+            paid_automatically=automatically,
         )
         self._apply_account_effect(transaction, 1)
         self._transactions[transaction.id] = transaction
@@ -976,7 +1003,7 @@ class DashboardStore:
         for bill_id in list(self._bills):
             while (bill := self._bills[bill_id]).auto_record and bill.next_due <= today:
                 try:
-                    self._record_bill(bill, bill.next_due)
+                    self._record_bill(bill, bill.next_due, automatically=True)
                 except HTTPException:
                     break  # Not enough money in the account: leave it for the user.
 
@@ -986,8 +1013,33 @@ class DashboardStore:
             bill = self._bills.get(bill_id)
             if not bill:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "Bill not found")
-            self._record_bill(bill, min(self.today(), bill.next_due))
+            self._record_bill(bill, min(self.today(), bill.next_due), automatically=False)
             return self._snapshot()
+
+    def bill_history(self, user_id: str, bill_id: str) -> BillHistory:
+        with self._lock:
+            self.require_owner(user_id)
+            bill = self._bills.get(bill_id)
+            if not bill:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Bill not found")
+            payments = sorted(
+                (t for t in self._transactions.values() if t.bill_id == bill_id),
+                key=lambda item: item.occurred_on,
+                reverse=True,
+            )
+            total = sum(t.amount_cents for t in payments)
+            year = self.today().year
+            return BillHistory(
+                bill=bill,
+                payments=payments,
+                payment_count=len(payments),
+                total_paid_cents=total,
+                paid_this_year_cents=sum(
+                    t.amount_cents for t in payments if t.occurred_on.year == year
+                ),
+                average_cents=average_cents(total, len(payments)),
+                auto_paid_count=sum(1 for t in payments if t.paid_automatically is True),
+            )
 
     def _validate_bill(self, account_id: str, category_id: str | None) -> None:
         if account_id not in self._accounts:
@@ -1301,6 +1353,140 @@ class DashboardStore:
             )
         return self._snapshot(month)
 
+    def _period(self, start: date, end: date) -> Period:
+        try:
+            name = describe_period(start, end, self.active_month)
+        except ValueError as error:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
+        return Period(
+            start=start,
+            end=end,
+            label=name.label,
+            phrase=name.phrase,
+            single_month=name.single_month,
+            month_count=len(name.months),
+        )
+
+    def dashboard_for_range(self, user_id: str, start: date, end: date) -> DashboardResponse:
+        """A snapshot whose spending figures cover [start, end]; balances stay as of today."""
+        period = self._period(start, end)
+        if end > month_end(self.active_month):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "That period is in the future"
+            )
+        if period.single_month:
+            return self.dashboard_for_user(user_id, start)
+        base = self.dashboard_for_user(user_id, month_start(end))
+        with self._lock:
+            rows = sorted(
+                (
+                    self._with_necessity(t)
+                    for t in self._transactions.values()
+                    if start <= t.occurred_on <= end
+                ),
+                key=lambda item: item.occurred_on,
+                reverse=True,
+            )
+            months = months_between(start, end)
+            # A month only partly inside the period counts for its share of days (floored).
+            month_budgets = [
+                {**b, "limit_cents": b["limit_cents"] * overlap // month_end(m).day}
+                for m in months
+                for b in self._monthly_budgets(m)
+                if (overlap := (min(end, month_end(m)) - max(start, m)).days + 1)
+            ]
+            total_budget = sum(item["limit_cents"] for item in month_budgets)
+            summary = build_summary(
+                [TransactionAmount(t.amount_cents, TransactionKind(t.kind)) for t in rows],
+                total_budget,
+                [],
+            )
+            spending_by_category, breakdown = self._category_breakdown(rows)
+            budgets = self._combined_budgets(month_budgets, rows, spending_by_category, start)
+            needs = sum(t.amount_cents for t in rows if t.necessity == "need")
+            wants = sum(t.amount_cents for t in rows if t.necessity == "want")
+            length = (end - start).days + 1
+            before = [
+                t
+                for t in self._transactions.values()
+                if start - timedelta(days=length) <= t.occurred_on < start
+            ]
+            previous_spending = sum(t.amount_cents for t in before if t.kind == "spending")
+            return base.model_copy(
+                update={
+                    "period": period,
+                    "transactions": rows,
+                    "budgets": budgets,
+                    "category_spending": breakdown,
+                    "spending_classification": SpendingClassification(
+                        needs_cents=needs,
+                        wants_cents=wants,
+                        needs_basis_points=share_basis_points(needs, needs + wants),
+                        wants_basis_points=share_basis_points(wants, needs + wants),
+                    ),
+                    "totals": DashboardTotals(
+                        **asdict(summary),
+                        available_balance_cents=base.totals.available_balance_cents,
+                        total_budget_cents=total_budget,
+                        savings_rate_basis_points=(
+                            summary.cash_flow_cents * 10_000 // summary.income_cents
+                            if summary.income_cents
+                            else 0
+                        ),
+                    ),
+                    "home": base.home.model_copy(
+                        update={
+                            "monthly_saved_cents": summary.cash_flow_cents,
+                            "monthly_goal_cents": base.home.monthly_goal_cents * len(months),
+                            "spending_change_basis_points": (
+                                (summary.spending_cents - previous_spending)
+                                * 10_000
+                                // previous_spending
+                                if previous_spending
+                                else None
+                            ),
+                        }
+                    ),
+                }
+            )
+
+    def _combined_budgets(
+        self,
+        month_budgets: list[dict],
+        rows: list[Transaction],
+        spending_by_category: dict[str | None, int],
+        start: date,
+    ) -> list[MonthlyBudget]:
+        """One row per category, limits summed across the months in the period."""
+        limits: dict[str, int] = {}
+        for item in month_budgets:
+            limits[item["category_id"]] = limits.get(item["category_id"], 0) + item["limit_cents"]
+        combined = []
+        for category_id, limit in limits.items():
+            category = self._categories[category_id]
+            spent = (
+                sum(
+                    t.amount_cents
+                    for t in rows
+                    if t.kind == "spending" and t.category_id == category_id
+                )
+                if category.parent_id
+                else spending_by_category.get(category_id, 0)
+            )
+            combined.append(
+                MonthlyBudget(
+                    id=f"period-{category_id}",
+                    category_id=category_id,
+                    category_name=category.name,
+                    month_start=start.replace(day=1),
+                    limit_cents=limit,
+                    spent_cents=spent,
+                    remaining_cents=limit - spent,
+                    usage_basis_points=spent * 10_000 // limit if limit else 0,
+                )
+            )
+        return sorted(combined, key=lambda item: item.category_name)
+
     def goal_for_user(self, user_id: str, goal_id: str) -> Goal:
         dashboard = self.dashboard_for_user(user_id)
         goal = next((item for item in dashboard.savings_goals if item.id == goal_id), None)
@@ -1355,29 +1541,100 @@ class DashboardStore:
             budget["limit_cents"] = new_limit_cents
             return self._snapshot()
 
+    def _new_transaction(
+        self,
+        description: str,
+        category_id: str | None,
+        account_id: str,
+        amount_cents: int,
+        kind: Literal["income", "spending"],
+        occurred_on: date,
+    ) -> Transaction:
+        """A validated, not-yet-saved transaction; picks a category when none is given."""
+        self._validate_transaction_references(account_id, category_id, kind)
+        auto = category_id is None
+        if auto:
+            category_id = categorize(description, kind).category_id
+        return Transaction(
+            id=f"tx-{uuid4().hex[:12]}",
+            description=description,
+            category=self._category_name(category_id),
+            account_id=account_id,
+            category_id=category_id,
+            auto_categorized=auto and category_id is not None,
+            amount_cents=amount_cents,
+            kind=kind,
+            occurred_on=occurred_on,
+        )
+
     def create_transaction(self, user_id: str, request: TransactionWrite) -> DashboardResponse:
         with self._lock:
             self.require_owner(user_id)
-            self._validate_transaction_references(
-                request.account_id, request.category_id, request.kind
+            transaction = self._new_transaction(
+                request.description,
+                request.category_id,
+                request.account_id,
+                request.amount_cents,
+                request.kind,
+                request.occurred_on,
             )
-            category_id = request.category_id
-            auto = category_id is None
-            if auto:
-                category_id = categorize(request.description, request.kind).category_id
-            transaction = Transaction(
-                id=f"tx-{uuid4().hex[:12]}",
-                description=request.description,
-                category=self._category_name(category_id),
-                account_id=request.account_id,
-                category_id=category_id,
-                auto_categorized=auto and category_id is not None,
-                amount_cents=request.amount_cents,
-                kind=request.kind,
-                occurred_on=request.occurred_on,
-            )
+            bill = self._bill_from(transaction, request.repeat) if request.repeat else None
             self._apply_account_effect(transaction, 1)
+            if bill:
+                self._bills[bill.id] = bill
+                transaction = transaction.model_copy(update={"bill_id": bill.id})
             self._transactions[transaction.id] = transaction
+            return self._snapshot()
+
+    def _bill_from(self, transaction: Transaction, repeat: TransactionRepeat) -> Bill:
+        """A recurring bill that starts with this transaction as its first payment."""
+        if transaction.kind != "spending":
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "Only money out can repeat. Set up your paycheque in Settings.",
+            )
+        next_due = repeat.next_due or next_due_after(transaction.occurred_on, repeat.frequency)
+        if next_due <= transaction.occurred_on:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "The next payment must be after this one"
+            )
+        return Bill(
+            id=f"bill-{uuid4().hex[:10]}",
+            name=transaction.description,
+            amount_cents=transaction.amount_cents,
+            category_id=transaction.category_id,
+            account_id=transaction.account_id,
+            frequency=repeat.frequency,
+            next_due=next_due,
+            auto_record=repeat.auto_record,
+            last_paid_on=transaction.occurred_on,
+        )
+
+    def create_split_transaction(
+        self, user_id: str, request: SplitTransactionWrite
+    ) -> DashboardResponse:
+        """Saves one transaction per account, all or nothing."""
+        with self._lock:
+            self.require_owner(user_id)
+            transactions = [
+                self._new_transaction(
+                    request.description,
+                    request.category_id,
+                    split.account_id,
+                    split.amount_cents,
+                    request.kind,
+                    request.occurred_on,
+                )
+                for split in request.splits
+            ]
+            accounts_before = self._accounts.copy()
+            try:
+                for transaction in transactions:
+                    self._apply_account_effect(transaction, 1)
+            except HTTPException:
+                self._accounts = accounts_before
+                raise
+            self._transactions.update({item.id: item for item in transactions})
             return self._snapshot()
 
     def update_transaction(

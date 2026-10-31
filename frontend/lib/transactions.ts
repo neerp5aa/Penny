@@ -1,8 +1,7 @@
 import type { Transaction } from "./api";
 import { centsToInput } from "./money";
 
-/** Money in/out, or spending that Penny labelled a need or a want. */
-export type KindFilter = "all" | "income" | "spending" | "need" | "want";
+export type KindFilter = "all" | "income" | "spending";
 /** "all", "uncategorized", or a category id. */
 export type CategoryFilter = string;
 export type TransactionFilters = { query: string; kind: KindFilter; category: CategoryFilter; from: string; to: string };
@@ -13,8 +12,7 @@ export const EMPTY_FILTERS: TransactionFilters = { query: "", kind: "all", categ
 export function filterTransactions(transactions: readonly Transaction[], filters: TransactionFilters, parentOf: (categoryId: string) => string | null = () => null): Transaction[] {
   const query = filters.query.trim().toLocaleLowerCase("en-CA");
   return transactions.filter((item) => {
-    if ((filters.kind === "income" || filters.kind === "spending") && item.kind !== filters.kind) return false;
-    if ((filters.kind === "need" || filters.kind === "want") && item.necessity !== filters.kind) return false;
+    if (filters.kind !== "all" && item.kind !== filters.kind) return false;
     if (filters.category === "uncategorized" && item.category_id !== null) return false;
     // Picking a parent category ("Food") also shows its subcategories ("Groceries").
     if (filters.category !== "all" && filters.category !== "uncategorized" && item.category_id !== filters.category && (!item.category_id || parentOf(item.category_id) !== filters.category)) return false;

@@ -299,7 +299,6 @@ def build_snapshot(ctx: CoachContext) -> dict[str, object]:
                     "amount": f.money(item.name, item.amount_cents, "recurring"),
                     "next_due": item.next_due.isoformat(),
                     "type": item.kind,
-                    "need_or_want": item.necessity,
                 }
                 for item in d.recurring.items
             ],

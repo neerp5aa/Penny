@@ -1,7 +1,7 @@
 from datetime import date
 from typing import Annotated, Literal
 
-from fastapi import Depends, FastAPI, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.auth import CurrentUser, get_current_user
@@ -17,6 +17,7 @@ from app.config import get_settings
 from app.dashboard_models import (
     AccountPatch,
     AccountWrite,
+    BillHistory,
     BillPatch,
     BillWrite,
     BudgetCopyRequest,
@@ -37,6 +38,7 @@ from app.dashboard_models import (
     ImportRequest,
     ImportResult,
     PaySchedule,
+    SplitTransactionWrite,
     TransactionPatch,
     TransactionWrite,
 )
@@ -80,7 +82,17 @@ def me(current_user: AuthenticatedUser) -> CurrentUserResponse:
 
 
 @app.get("/api/v1/dashboard", response_model=DashboardResponse, tags=["dashboard"])
-def dashboard(current_user: AuthenticatedUser, month: ViewMonth = None) -> DashboardResponse:
+def dashboard(
+    current_user: AuthenticatedUser,
+    month: ViewMonth = None,
+    start: Annotated[date | None, Query(description="Start of a custom period")] = None,
+    end: Annotated[date | None, Query(description="End of a custom period (inclusive)")] = None,
+) -> DashboardResponse:
+    """One month (default: this month), or any period up to 36 months with start and end."""
+    if (start is None) != (end is None):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Send both start and end")
+    if start and end:
+        return dashboard_store.dashboard_for_range(current_user.id, start, end)
     return dashboard_store.dashboard_for_user(current_user.id, month)
 
 
@@ -94,6 +106,16 @@ def create_transaction(
 ) -> DashboardResponse:
     return _in_view(
         dashboard_store.create_transaction(current_user.id, request), current_user, month
+    )
+
+
+@app.post("/api/v1/transactions/split", response_model=DashboardResponse, tags=["transactions"])
+def create_split_transaction(
+    request: SplitTransactionWrite, current_user: AuthenticatedUser, month: ViewMonth = None
+) -> DashboardResponse:
+    """Record one purchase or deposit across several accounts (one transaction each)."""
+    return _in_view(
+        dashboard_store.create_split_transaction(current_user.id, request), current_user, month
     )
 
 
@@ -248,6 +270,12 @@ def delete_bill(
     bill_id: str, current_user: AuthenticatedUser, month: ViewMonth = None
 ) -> DashboardResponse:
     return _in_view(dashboard_store.delete_bill(current_user.id, bill_id), current_user, month)
+
+
+@app.get("/api/v1/bills/{bill_id}/history", response_model=BillHistory, tags=["bills"])
+def bill_history(bill_id: str, current_user: AuthenticatedUser) -> BillHistory:
+    """Every recorded payment of a bill, newest first, with totals."""
+    return dashboard_store.bill_history(current_user.id, bill_id)
 
 
 @app.post("/api/v1/bills/{bill_id}/mark-paid", response_model=DashboardResponse, tags=["bills"])

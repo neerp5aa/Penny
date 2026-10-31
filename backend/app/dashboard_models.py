@@ -1,7 +1,7 @@
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models import Account, DemoUser, Summary, Transaction
 
@@ -146,8 +146,9 @@ class RecurringExpense(DashboardModel):
     next_due: date
     days_until_due: int
     kind: Literal["bill", "subscription"]
-    necessity: Literal["need", "want"]
     auto_record: bool
+    last_paid_on: date | None
+    payment_count: int = Field(ge=0)
 
 
 class RecurringSuggestion(DashboardModel):
@@ -163,8 +164,7 @@ class RecurringSummary(DashboardModel):
     items: list[RecurringExpense]
     suggestions: list[RecurringSuggestion]
     fixed_monthly_cents: int = Field(ge=0)
-    needs_monthly_cents: int = Field(ge=0)
-    wants_monthly_cents: int = Field(ge=0)
+    subscriptions_monthly_cents: int = Field(ge=0)
     due_next_7_days_cents: int = Field(ge=0)
     due_before_payday_cents: int = Field(ge=0)
     share_of_income_basis_points: int | None
@@ -250,6 +250,17 @@ class HomeSummary(DashboardModel):
     weekly_flexible_cents: int
 
 
+class Period(DashboardModel):
+    """The date range a dashboard snapshot covers."""
+
+    start: date
+    end: date
+    label: str
+    phrase: str
+    single_month: bool
+    month_count: int = Field(ge=1)
+
+
 class DashboardTotals(Summary):
     available_balance_cents: int
     total_budget_cents: int = Field(ge=0)
@@ -258,6 +269,7 @@ class DashboardTotals(Summary):
 
 class DashboardResponse(DashboardModel):
     active_month: date
+    period: Period
     current_month: date
     data_months: list[date]
     profile: DemoUser
@@ -285,6 +297,15 @@ class DashboardResponse(DashboardModel):
     totals: DashboardTotals
 
 
+class TransactionRepeat(DashboardModel):
+    """Turns a new expense into a recurring bill as well."""
+
+    frequency: BillFrequency
+    # Next time it's due; defaults to one period after the transaction's date.
+    next_due: date | None = None
+    auto_record: bool = True
+
+
 class TransactionWrite(DashboardModel):
     description: str = Field(min_length=1, max_length=160)
     account_id: str
@@ -292,6 +313,29 @@ class TransactionWrite(DashboardModel):
     amount_cents: int = Field(gt=0)
     kind: Literal["income", "spending"]
     occurred_on: date
+    repeat: TransactionRepeat | None = None
+
+
+class TransactionSplit(DashboardModel):
+    account_id: str
+    amount_cents: int = Field(gt=0)
+
+
+class SplitTransactionWrite(DashboardModel):
+    """One purchase or deposit split across several accounts; saved as one transaction each."""
+
+    description: str = Field(min_length=1, max_length=160)
+    category_id: str | None = None
+    kind: Literal["income", "spending"]
+    occurred_on: date
+    splits: list[TransactionSplit] = Field(min_length=2, max_length=20)
+
+    @model_validator(mode="after")
+    def _one_split_per_account(self) -> "SplitTransactionWrite":
+        accounts = [split.account_id for split in self.splits]
+        if len(set(accounts)) != len(accounts):
+            raise ValueError("Each account can appear only once in a split")
+        return self
 
 
 class TransactionPatch(DashboardModel):
@@ -502,3 +546,13 @@ class ImportResult(DashboardModel):
     skipped: int
     errors: list[str]
     dashboard: DashboardResponse
+
+
+class BillHistory(DashboardModel):
+    bill: Bill
+    payments: list[Transaction]
+    payment_count: int = Field(ge=0)
+    total_paid_cents: int = Field(ge=0)
+    paid_this_year_cents: int = Field(ge=0)
+    average_cents: int = Field(ge=0)
+    auto_paid_count: int = Field(ge=0)

@@ -52,6 +52,10 @@ class Transaction(StrictModel):
     # Filled in when a dashboard snapshot is built; never trusted from clients.
     necessity: Literal["need", "want"] | None = None
     auto_categorized: bool = False
+    # Set when this is a payment of a recurring bill. How it was paid: True when Penny recorded
+    # it on the due date, False when the user marked it paid, None for history or a manual entry.
+    bill_id: str | None = None
+    paid_automatically: bool | None = None
 
 
 class Budget(StrictModel):

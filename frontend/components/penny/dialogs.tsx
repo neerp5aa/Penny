@@ -1,12 +1,13 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
-import { ArrowDownLeft, ArrowUpRight, LoaderCircle, PiggyBank, Trash2 } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, LoaderCircle, PiggyBank, Repeat, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input, Select } from "@/components/ui/input";
-import { type AccountType, type Budget, type Category, type CategorySuggestion, type Dashboard, dashboardApi, type SavingsGoal, type Transaction, type TransactionWrite } from "@/lib/api";
-import { DatePicker } from "@/components/ui/date-picker";
+import { type AccountType, type BillFrequency, type Budget, type Category, type CategorySuggestion, type Dashboard, dashboardApi, type SavingsGoal, type SplitTransactionWrite, type Transaction, type TransactionWrite } from "@/lib/api";
+import { DatePicker, isoToday } from "@/components/ui/date-picker";
+import { FREQUENCIES, nextAfter, PaymentMode } from "./bill-options";
 import { defaultTransactionDate, formatMonth } from "@/lib/format";
 import { centsToInput, parseCadToCents } from "@/lib/money";
 import { cad, Field } from "./shared";
@@ -46,7 +47,7 @@ export function TransactionDialog({ target, dashboard, onClose, onSubmit, onRequ
   target: Transaction | "new" | null;
   dashboard: Dashboard;
   onClose: () => void;
-  onSubmit: (id: string | null, body: TransactionWrite) => Promise<string | null>;
+  onSubmit: (id: string | null, body: TransactionWrite | SplitTransactionWrite) => Promise<string | null>;
   onRequestDelete: (item: Transaction) => void;
   onCreate: InlineCreate;
 }) {
@@ -65,8 +66,8 @@ export function TransactionDialog({ target, dashboard, onClose, onSubmit, onRequ
 }
 
 const KIND_STYLE = {
-  spending: { label: "Money out", icon: ArrowUpRight, sign: "−", on: "border-danger bg-danger-soft text-danger", button: "bg-danger text-on-danger hover:bg-danger-hover" },
-  income: { label: "Money in", icon: ArrowDownLeft, sign: "+", on: "border-zone-green bg-zone-green-soft text-[#0d7a4d] dark:text-zone-green", button: "bg-zone-green text-white hover:brightness-95" },
+  spending: { label: "Money out", icon: ArrowUpRight, sign: "−", text: "text-danger", on: "border-danger bg-danger-soft text-danger", button: "bg-danger text-on-danger hover:bg-danger-hover" },
+  income: { label: "Money in", icon: ArrowDownLeft, sign: "+", text: "text-[#0d7a4d] dark:text-zone-green", on: "border-zone-green bg-zone-green-soft text-[#0d7a4d] dark:text-zone-green", button: "bg-zone-green text-white hover:brightness-95" },
 } as const;
 
 export const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = { chequing: "Chequing", savings: "Savings", credit: "Credit card", cash: "Cash", investment: "Investment", other: "Other" };
@@ -82,7 +83,7 @@ export function categoryOptions(categories: Category[], kind: Category["kind"]):
 
 const NEW = "__new__";
 
-function TransactionForm({ item, dashboard, onSubmit, onRequestDelete, onCreate }: { item: Transaction | null; dashboard: Dashboard; onSubmit: Submit<TransactionWrite>; onRequestDelete?: () => void; onCreate: InlineCreate }) {
+function TransactionForm({ item, dashboard, onSubmit, onRequestDelete, onCreate }: { item: Transaction | null; dashboard: Dashboard; onSubmit: Submit<TransactionWrite | SplitTransactionWrite>; onRequestDelete?: () => void; onCreate: InlineCreate }) {
   const [kind, setKind] = useState<Transaction["kind"]>(item?.kind ?? "spending");
   const [amountError, setAmountError] = useState("");
   const [formError, setFormError] = useState("");
@@ -93,6 +94,13 @@ function TransactionForm({ item, dashboard, onSubmit, onRequestDelete, onCreate 
   const [account, setAccount] = useState(item?.account_id ?? dashboard.accounts.find((a) => a.account_type === "chequing")?.id ?? dashboard.accounts[0]?.id ?? "");
   const [date, setDate] = useState(item?.occurred_on ?? defaultTransactionDate(dashboard.active_month));
   const [adding, setAdding] = useState<"category" | "account" | null>(null);
+  const [splits, setSplits] = useState<SplitDraft>({});
+  const [splitErrors, setSplitErrors] = useState<Record<string, string>>({});
+  const [repeat, setRepeat] = useState<{ on: boolean; frequency: BillFrequency; nextDue: string; auto: boolean }>({ on: false, frequency: "monthly", nextDue: "", auto: true });
+  const splitMode = account === MULTIPLE;
+  // Only a new money-out entry paid from one account can become a recurring bill.
+  const canRepeat = !item && kind === "spending" && !splitMode;
+  const splitTotal = splitTotalCents(dashboard, splits);
   const style = KIND_STYLE[kind];
   const options = categoryOptions(dashboard.categories, kind);
 
@@ -111,13 +119,36 @@ function TransactionForm({ item, dashboard, onSubmit, onRequestDelete, onCreate 
     } catch { /* Suggestions are optional; the user can still pick a category. */ }
   }
 
+  function chooseAccount(value: string) {
+    if (value === NEW) { setAdding("account"); return; }
+    if (value === MULTIPLE && account !== MULTIPLE) {
+      // Start with every account included; the user unticks the ones they don't use.
+      setSplits(Object.fromEntries(dashboard.accounts.map((option) => [option.id, splits[option.id] ?? { included: true, amount: "" }])));
+      setSplitErrors({});
+    }
+    setAccount(value);
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setFormError("");
     const form = new FormData(event.currentTarget);
+    const shared = { description: String(form.get("description")).trim(), category_id: category || null, kind, occurred_on: date };
+    if (splitMode) {
+      const parsed = parseSplits(dashboard, splits);
+      setSplitErrors(parsed.errors);
+      if (Object.keys(parsed.errors).length) return;
+      if (parsed.parts.length === 0) { setFormError("Tick at least one account and enter its amount."); return; }
+      setBusy(true);
+      const error = await onSubmit(parsed.parts.length === 1 ? { ...shared, ...parsed.parts[0] } : { ...shared, splits: parsed.parts });
+      setBusy(false);
+      if (error) setFormError(error);
+      return;
+    }
     const amount = parseAmount(form.get("amount"));
     if ("error" in amount) { setAmountError(amount.error); return; }
     setAmountError("");
+    if (canRepeat && repeat.on && repeat.nextDue && repeat.nextDue <= date) { setFormError("The next payment has to be after this one."); return; }
     setBusy(true);
     const error = await onSubmit({
       description: String(form.get("description")).trim(),
@@ -126,6 +157,7 @@ function TransactionForm({ item, dashboard, onSubmit, onRequestDelete, onCreate 
       amount_cents: amount.cents,
       kind,
       occurred_on: date,
+      repeat: canRepeat && repeat.on ? { frequency: repeat.frequency, next_due: repeat.nextDue || null, auto_record: repeat.auto } : null,
     });
     setBusy(false);
     if (error) setFormError(error);
@@ -146,11 +178,13 @@ function TransactionForm({ item, dashboard, onSubmit, onRequestDelete, onCreate 
         })}
       </div>
 
-      <Field label="Amount (CAD)" error={amountError}>
+      <Field label="Amount (CAD)" error={amountError} hint={splitMode ? "The total of the accounts below." : undefined}>
         {(props) => (
           <div className={cn("flex items-center rounded-2xl border-2 px-4 transition-colors focus-within:ring-4 focus-within:ring-accent/15", style.on)}>
             <span className="tabular shrink-0 whitespace-nowrap text-3xl font-semibold" aria-hidden="true">{style.sign}$</span>
-            <input {...props} name="amount" inputMode="decimal" autoComplete="off" placeholder="0.00" defaultValue={item ? centsToInput(String(item.amount_cents)) : ""} required className="tabular min-h-16 w-full min-w-0 bg-transparent px-1 text-3xl font-semibold text-ink placeholder:text-ink-subtle/60 focus:outline-none" />
+            {splitMode
+              ? <output {...props} className="tabular flex min-h-16 w-full min-w-0 items-center px-1 text-3xl font-semibold text-ink">{centsToInput(String(splitTotal))}</output>
+              : <input {...props} name="amount" inputMode="decimal" autoComplete="off" placeholder="0.00" defaultValue={item ? centsToInput(String(item.amount_cents)) : ""} required className="tabular min-h-16 w-full min-w-0 bg-transparent px-1 text-3xl font-semibold text-ink placeholder:text-ink-subtle/60 focus:outline-none" />}
           </div>
         )}
       </Field>
@@ -171,8 +205,9 @@ function TransactionForm({ item, dashboard, onSubmit, onRequestDelete, onCreate 
         </Field>
         <Field label={kind === "income" ? "Paid into" : "Paid from"}>
           {(props) => (
-            <Select {...props} value={account} onChange={(event) => { if (event.target.value === NEW) { setAdding("account"); return; } setAccount(event.target.value); }} required>
+            <Select {...props} value={account} onChange={(event) => chooseAccount(event.target.value)} required>
               {dashboard.accounts.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
+              {!item && dashboard.accounts.length > 1 && <option value={MULTIPLE}>Multiple accounts…</option>}
               <option value={NEW}>+ New account…</option>
             </Select>
           )}
@@ -181,10 +216,33 @@ function TransactionForm({ item, dashboard, onSubmit, onRequestDelete, onCreate 
 
       {adding === "category" && <NewCategory kind={kind} dashboard={dashboard} onCreate={onCreate} onDone={(id) => { setAdding(null); if (id) { setCategory(id); setCategoryTouched(true); } }} />}
       {adding === "account" && <NewAccount onCreate={onCreate} onDone={(id) => { setAdding(null); if (id) setAccount(id); }} />}
+      {splitMode && <SplitAccounts dashboard={dashboard} kind={kind} splits={splits} errors={splitErrors} onChange={setSplits} onSingle={() => setAccount(dashboard.accounts[0]?.id ?? "")} />}
 
       <Field label="Date">
-        {(props) => <DatePicker id={props.id} aria-describedby={props["aria-describedby"]} value={date} onChange={setDate} />}
+        {(props) => <DatePicker id={props.id} aria-describedby={props["aria-describedby"]} value={date} onChange={(value) => { setDate(value); if (repeat.on) setRepeat({ ...repeat, nextDue: nextAfter(value, repeat.frequency) }); }} />}
       </Field>
+
+      {canRepeat && (
+        <div className={cn("rounded-2xl border transition-colors", repeat.on ? "border-primary/40 bg-primary-soft/40" : "border-line")}>
+          <label className="flex min-h-14 cursor-pointer items-center gap-3 px-3">
+            <input type="checkbox" checked={repeat.on} onChange={(event) => setRepeat({ ...repeat, on: event.target.checked, nextDue: event.target.checked ? nextAfter(date, repeat.frequency) : "" })} className="size-5 shrink-0 accent-[var(--color-accent)]" />
+            <span className="min-w-0"><span className="flex items-center gap-1.5 text-sm font-semibold text-ink"><Repeat className="size-4 text-[#7047b7] dark:text-[#c1a5ee]" aria-hidden="true" />Recurring</span><span className="block text-xs text-ink-subtle">Repeats on a schedule, like rent or a subscription</span></span>
+          </label>
+          {repeat.on && (
+            <div className="space-y-4 border-t border-line p-3">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="How often">{(props) => (
+                  <Select {...props} value={repeat.frequency} onChange={(event) => { const frequency = event.target.value as BillFrequency; setRepeat({ ...repeat, frequency, nextDue: nextAfter(date, frequency) }); }}>
+                    {FREQUENCIES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  </Select>
+                )}</Field>
+                <Field label="Next payment">{(props) => <DatePicker id={props.id} value={repeat.nextDue} onChange={(value) => setRepeat({ ...repeat, nextDue: value })} />}</Field>
+              </div>
+              <PaymentMode value={repeat.auto} onChange={(auto) => setRepeat({ ...repeat, auto })} />
+            </div>
+          )}
+        </div>
+      )}
 
       <FormError message={formError} />
       <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row">
@@ -195,6 +253,69 @@ function TransactionForm({ item, dashboard, onSubmit, onRequestDelete, onCreate 
         </Button>
       </div>
     </form>
+  );
+}
+
+const MULTIPLE = "__multiple__";
+type SplitDraft = Record<string, { included: boolean; amount: string }>;
+
+/** Sum of the ticked accounts' valid amounts, for the live total. */
+function splitTotalCents(dashboard: Dashboard, splits: SplitDraft): number {
+  return dashboard.accounts.reduce((total, account) => {
+    const row = splits[account.id];
+    if (!row?.included || !row.amount.trim()) return total;
+    try { return total + parseCadToCents(row.amount); } catch { return total; }
+  }, 0);
+}
+
+function parseSplits(dashboard: Dashboard, splits: SplitDraft): { parts: { account_id: string; amount_cents: number }[]; errors: Record<string, string> } {
+  const parts: { account_id: string; amount_cents: number }[] = [];
+  const errors: Record<string, string> = {};
+  for (const account of dashboard.accounts) {
+    const row = splits[account.id];
+    if (!row?.included) continue;
+    const amount = parseAmount(row.amount);
+    if ("error" in amount) errors[account.id] = row.amount.trim() ? amount.error : "Enter an amount, or untick this account";
+    else parts.push({ account_id: account.id, amount_cents: amount.cents });
+  }
+  return { parts, errors };
+}
+
+/** Every account with a tick box; ticked accounts get an amount, unticked ones are greyed out. */
+function SplitAccounts({ dashboard, kind, splits, errors, onChange, onSingle }: { dashboard: Dashboard; kind: Transaction["kind"]; splits: SplitDraft; errors: Record<string, string>; onChange: (next: SplitDraft) => void; onSingle: () => void }) {
+  const update = (id: string, patch: Partial<SplitDraft[string]>) => onChange({ ...splits, [id]: { ...(splits[id] ?? { included: true, amount: "" }), ...patch } });
+  const style = KIND_STYLE[kind];
+  return (
+    <fieldset className="rounded-2xl border border-line p-3">
+      <legend className="px-1 text-sm font-semibold text-ink">Split {kind === "income" ? "into" : "from"} accounts</legend>
+      <ul className="space-y-2">
+        {dashboard.accounts.map((account) => {
+          const row = splits[account.id] ?? { included: true, amount: "" };
+          const inputId = `split-${account.id}`;
+          return (
+            <li key={account.id} className={cn("rounded-xl transition-opacity", !row.included && "opacity-50")}>
+              <div className="flex min-h-12 items-center gap-3">
+                <label className="flex min-h-11 min-w-0 flex-1 cursor-pointer items-center gap-3">
+                  <input type="checkbox" checked={row.included} onChange={(event) => update(account.id, { included: event.target.checked })} className="size-5 shrink-0 accent-[var(--color-accent)]" />
+                  <span className="min-w-0">
+                    <span className={cn("block truncate text-sm font-semibold", row.included ? "text-ink" : "text-ink-subtle")}>{account.name}</span>
+                    <span className="block text-xs text-ink-subtle">{row.included ? ACCOUNT_TYPE_LABELS[account.account_type] : "Not used · tick to add it back"}</span>
+                  </span>
+                </label>
+                {row.included && (
+                  <div className={cn("flex w-32 shrink-0 items-center rounded-xl border px-2 focus-within:ring-2 focus-within:ring-accent/30", errors[account.id] ? "border-danger" : "border-line-strong")}>
+                    <span className={cn("text-sm font-semibold", style.text)} aria-hidden="true">{style.sign}$</span>
+                    <input id={inputId} aria-label={`Amount for ${account.name}`} aria-invalid={Boolean(errors[account.id])} inputMode="decimal" autoComplete="off" placeholder="0.00" value={row.amount} onChange={(event) => update(account.id, { amount: event.target.value })} className="tabular min-h-11 w-full min-w-0 bg-transparent px-1 text-right text-base font-semibold text-ink focus:outline-none" />
+                  </div>
+                )}
+              </div>
+              {row.included && errors[account.id] && <p className="mt-1 text-right text-xs text-danger">{errors[account.id]}</p>}
+            </li>
+          );
+        })}
+      </ul>
+      <button type="button" onClick={onSingle} className="mt-2 min-h-10 px-1 text-sm font-semibold text-accent-strong underline-offset-4 hover:underline">Use one account instead</button>
+    </fieldset>
   );
 }
 
@@ -354,6 +475,7 @@ export function GoalDialog({ target, onClose, onSubmit, onRequestDelete }: {
 }
 
 function GoalForm({ item, onSubmit, onRequestDelete }: { item: SavingsGoal | null; onSubmit: Submit<GoalBody>; onRequestDelete?: () => void }) {
+  const [targetDate, setTargetDate] = useState(item?.target_date ?? "");
   const [errors, setErrors] = useState<{ current?: string; target?: string }>({});
   const [formError, setFormError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -393,7 +515,7 @@ function GoalForm({ item, onSubmit, onRequestDelete }: { item: SavingsGoal | nul
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Target date" hint="Optional">
-          {(props) => <Input {...props} name="target_date" type="date" defaultValue={item?.target_date ?? ""} />}
+          {(props) => <DatePicker id={props.id} aria-describedby={props["aria-describedby"]} name="target_date" value={targetDate} onChange={setTargetDate} min={isoToday()} optional />}
         </Field>
         {item && item.status !== "completed" && (
           <Field label="Status" hint="Paused goals keep their progress.">

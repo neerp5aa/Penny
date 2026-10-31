@@ -65,9 +65,13 @@ def build_recurring(
     typical_income_cents: int,
 ) -> RecurringSummary:
     items = []
+    payments: dict[str, int] = {}
+    for transaction in transactions:
+        if transaction.bill_id:
+            payments[transaction.bill_id] = payments.get(transaction.bill_id, 0) + 1
     for bill in bills:
-        need_or_want = necessity(bill.name, bill.category_id)
-        is_subscription = need_or_want == "want" or any(
+        # Non-essential repeating charges (streaming, memberships) read as subscriptions.
+        is_subscription = necessity(bill.name, bill.category_id) == "want" or any(
             word in bill.name.casefold() for word in _SUBSCRIPTION_WORDS
         )
         items.append(
@@ -81,8 +85,9 @@ def build_recurring(
                 next_due=bill.next_due,
                 days_until_due=(bill.next_due - today).days,
                 kind="subscription" if is_subscription else "bill",
-                necessity=need_or_want,
                 auto_record=bill.auto_record,
+                last_paid_on=bill.last_paid_on,
+                payment_count=payments.get(bill.id, 0),
             )
         )
     items.sort(key=lambda item: item.next_due)
@@ -99,15 +104,14 @@ def build_recurring(
         if series.key not in known and series.amount_cents not in known_amounts
     ]
     fixed = sum(item.monthly_cents for item in items)
-    wants = sum(item.monthly_cents for item in items if item.necessity == "want")
+    subscriptions = sum(item.monthly_cents for item in items if item.kind == "subscription")
     week_end = today + timedelta(days=7)
     payday_end = (next_payday - timedelta(days=1)) if next_payday else week_end
     return RecurringSummary(
         items=items,
         suggestions=suggestions,
         fixed_monthly_cents=fixed,
-        needs_monthly_cents=fixed - wants,
-        wants_monthly_cents=wants,
+        subscriptions_monthly_cents=subscriptions,
         due_next_7_days_cents=sum(
             bill.amount_cents * len(bill_due_dates(bill, today, week_end)) for bill in bills
         ),

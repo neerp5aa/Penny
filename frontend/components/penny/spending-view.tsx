@@ -1,21 +1,27 @@
 "use client";
 
 import { useState } from "react";
-import { Copy, Pencil, Plus, Sparkles, Target } from "lucide-react";
+import { Copy, Pencil, Plus, ReceiptText, Repeat, Target } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import type { Budget, Dashboard, Transaction } from "@/lib/api";
-import { addMonths, formatMonth, formatShortDate } from "@/lib/format";
+import { addMonths } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { CashFlowChart, CategoryBars, categoryColours } from "./charts";
+import { type RecurringActions, RecurringView } from "./recurring-view";
 import { cad, EmptyState, SectionHeading } from "./shared";
 import { TransactionsPanel } from "./transactions-panel";
 import { useHistory } from "./use-history";
 
+export type SpendingTab = "transactions" | "recurring";
+
 type Props = {
   dashboard: Dashboard;
   historyVersion: number;
+  tab: SpendingTab;
+  onTabChange: (tab: SpendingTab) => void;
+  recurring: RecurringActions;
   onAsk: (question: string) => void;
   onSelectMonth: (month: string) => void;
   onAddTransaction: () => void;
@@ -32,67 +38,73 @@ export function budgetStatus(budget: Budget): { label: string; tone: "danger" | 
   return { label: `${cad(budget.remaining_cents)} left`, tone: "accent", bar: "bg-accent" };
 }
 
+const TABS: { id: SpendingTab; label: string; icon: typeof ReceiptText }[] = [
+  { id: "transactions", label: "Transactions", icon: ReceiptText },
+  { id: "recurring", label: "Recurring", icon: Repeat },
+];
+
 export function SpendingView(props: Props) {
-  const { dashboard } = props;
+  const { dashboard, tab } = props;
   return (
-    <div className="mx-auto max-w-6xl space-y-8">
-      <SpendingSummary dashboard={dashboard} />
-      <div className="grid gap-5 lg:grid-cols-[1.2fr_1fr] [&>*]:min-w-0">
-        <Budgets {...props} />
-        <Wants dashboard={dashboard} onAsk={props.onAsk} />
+    <div className="mx-auto max-w-6xl space-y-6">
+      <div role="tablist" aria-label="Spending sections" className="inline-flex rounded-xl bg-sage-soft p-1">
+        {TABS.map(({ id, label, icon: Icon }) => (
+          <button key={id} type="button" role="tab" id={`spending-tab-${id}`} aria-selected={tab === id} aria-controls={`spending-panel-${id}`} onClick={() => props.onTabChange(id)} className={cn("inline-flex min-h-10 items-center gap-2 rounded-lg px-4 text-sm font-semibold transition-colors", tab === id ? "bg-surface text-ink shadow-sm" : "text-ink-subtle hover:text-ink")}>
+            <Icon className="size-4" aria-hidden="true" />{label}
+            {id === "recurring" && <span className="tabular rounded-full bg-sage px-1.5 text-xs text-ink-muted">{dashboard.recurring.items.length}</span>}
+          </button>
+        ))}
       </div>
-      <TransactionsPanel dashboard={dashboard} title={`Transactions · ${formatMonth(dashboard.active_month)}`} description="Categories are picked automatically from the merchant name. Export any view as CSV." onAdd={props.onAddTransaction} onEdit={props.onEditTransaction} onDelete={props.onDeleteTransaction} />
-      <Trends dashboard={dashboard} historyVersion={props.historyVersion} onSelectMonth={props.onSelectMonth} />
+      {tab === "transactions" ? (
+        <div id="spending-panel-transactions" role="tabpanel" aria-labelledby="spending-tab-transactions" className="space-y-8">
+          <TransactionsPanel dashboard={dashboard} onAdd={props.onAddTransaction} onEdit={props.onEditTransaction} onDelete={props.onDeleteTransaction} />
+          <Budgets {...props} />
+          <Trends dashboard={dashboard} historyVersion={props.historyVersion} onSelectMonth={props.onSelectMonth} />
+        </div>
+      ) : (
+        <div id="spending-panel-recurring" role="tabpanel" aria-labelledby="spending-tab-recurring">
+          <RecurringView dashboard={dashboard} onAsk={props.onAsk} {...props.recurring} />
+        </div>
+      )}
     </div>
   );
 }
 
-function SpendingSummary({ dashboard }: { dashboard: Dashboard }) {
-  const { totals, spending_classification: split } = dashboard;
-  const over = totals.budget_remaining_cents < 0;
-  return (
-    <section aria-label="Spending summary" className="grid gap-3 sm:grid-cols-3">
-      <Card className="p-5">
-        <p className="text-sm text-ink-subtle">Spent this month</p>
-        <p className="tabular mt-1 text-2xl font-semibold tracking-tight text-ink">{cad(totals.spending_cents)}</p>
-        <p className="mt-1 text-xs text-ink-subtle">of {cad(totals.total_budget_cents)} planned</p>
-      </Card>
-      <Card className="p-5">
-        <p className="text-sm text-ink-subtle">{over ? "Over budget" : "Left to spend"}</p>
-        <p className={cn("tabular mt-1 text-2xl font-semibold tracking-tight", over ? "text-danger" : "text-accent-strong")}>{cad(Math.abs(totals.budget_remaining_cents))}</p>
-        <p className="mt-1 text-xs text-ink-subtle">Safe to spend after bills: {cad(dashboard.spending_power_cents)}</p>
-      </Card>
-      <Card className="p-5">
-        <p className="text-sm text-ink-subtle">Needs vs wants</p>
-        <div className="mt-3 flex h-3 overflow-hidden rounded-full bg-sage" role="img" aria-label={`Needs ${Math.round(split.needs_basis_points / 100)} percent, wants ${Math.round(split.wants_basis_points / 100)} percent`}>
-          <span className="bg-info" style={{ width: `${split.needs_basis_points / 100}%` }} />
-          <span className="bg-gold" style={{ width: `${split.wants_basis_points / 100}%` }} />
-        </div>
-        <div className="mt-2 flex justify-between text-xs">
-          <span className="text-ink-muted"><span className="mr-1 inline-block size-2 rounded-full bg-info" aria-hidden="true" />Needs {cad(split.needs_cents)}</span>
-          <span className="text-ink-muted"><span className="mr-1 inline-block size-2 rounded-full bg-gold" aria-hidden="true" />Wants {cad(split.wants_cents)}</span>
-        </div>
-      </Card>
-    </section>
-  );
-}
-
 function Budgets({ dashboard, onAddBudget, onEditBudget, onCopyBudgets }: Props) {
+  const { totals, period } = dashboard;
   const previousMonth = addMonths(dashboard.active_month, -1);
   const canCopy = dashboard.data_months.includes(previousMonth);
+  const editable = period.single_month;
+  const carried = dashboard.budgets.some((budget) => budget.carried_over);
+  const over = totals.budget_remaining_cents < 0;
   return (
     <Card className="p-5 sm:p-6">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold tracking-tight text-ink">Budgets</h2>
-        <div className="flex gap-2">
-          {canCopy && dashboard.budgets.length === 0 && <Button variant="outline" size="sm" onClick={() => onCopyBudgets(previousMonth)}><Copy className="size-4" aria-hidden="true" />Copy last month</Button>}
-          <Button variant="secondary" size="sm" onClick={onAddBudget}><Plus className="size-4" aria-hidden="true" />Add</Button>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold tracking-tight text-ink">Budgets</h2>
+          <p className="mt-0.5 text-sm text-ink-muted">
+            <span className="tabular font-semibold text-ink">{cad(totals.spending_cents)}</span> of <span className="tabular">{cad(totals.total_budget_cents)}</span> spent {period.phrase} ·{" "}
+            <span className={cn("tabular font-semibold", over ? "text-danger" : "text-accent-strong")}>{cad(Math.abs(totals.budget_remaining_cents))} {over ? "over" : "left"}</span>
+          </p>
         </div>
+        {editable && (
+          <div className="flex gap-2">
+            {canCopy && dashboard.budgets.length === 0 && <Button variant="outline" size="sm" onClick={() => onCopyBudgets(previousMonth)}><Copy className="size-4" aria-hidden="true" />Copy last month</Button>}
+            <Button variant="secondary" size="sm" onClick={onAddBudget}><Plus className="size-4" aria-hidden="true" />Add budget</Button>
+          </div>
+        )}
       </div>
+      {!editable && <p className="mt-3 rounded-xl bg-sage-soft px-3 py-2 text-xs text-ink-muted">Limits are combined across {period.month_count} months{period.label.includes("–") ? ", prorated for partial months" : ""}. Pick a single month to edit them.</p>}
+      {carried && editable && (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-info-soft px-3 py-2 text-sm text-ink">
+          <span>Carried over from last month. Keep them as they are?</span>
+          <Button size="sm" onClick={() => onCopyBudgets(previousMonth)}>Keep these budgets</Button>
+        </div>
+      )}
       {dashboard.budgets.length === 0 ? (
         <EmptyState className="mt-4" icon={Target} title="No budgets yet" description="Set a monthly limit for a category to track it here." />
       ) : (
-        <ul className="mt-4 space-y-4">
+        <ul className="mt-5 grid gap-x-8 gap-y-5 md:grid-cols-2">
           {[...dashboard.budgets].sort((a, b) => b.usage_basis_points - a.usage_basis_points).map((budget) => {
             const status = budgetStatus(budget);
             return (
@@ -101,39 +113,16 @@ function Budgets({ dashboard, onAddBudget, onEditBudget, onCopyBudgets }: Props)
                   <span className="truncate text-sm font-semibold text-ink">{budget.category_name}</span>
                   <span className="flex items-center gap-1">
                     <span className={cn("text-sm font-medium", status.tone === "danger" ? "text-danger" : status.tone === "gold" ? "text-gold-strong" : "text-ink-muted")}>{status.label}</span>
-                    <button type="button" onClick={() => onEditBudget(budget)} className="grid size-11 place-items-center rounded-lg text-ink-subtle hover:bg-sage-soft hover:text-ink" aria-label={`Edit ${budget.category_name} budget`}><Pencil className="size-3.5" aria-hidden="true" /></button>
+                    {editable && !budget.carried_over && <button type="button" onClick={() => onEditBudget(budget)} className="grid size-10 place-items-center rounded-lg text-ink-subtle hover:bg-sage-soft hover:text-ink" aria-label={`Edit ${budget.category_name} budget`}><Pencil className="size-3.5" aria-hidden="true" /></button>}
                   </span>
                 </div>
-                <Progress value={Math.min(100, budget.usage_basis_points / 100)} indicatorClassName={status.bar} aria-label={`${budget.category_name}: ${Math.floor(budget.usage_basis_points / 100)}% used`} />
+                <Progress className="mt-1" value={Math.min(100, budget.usage_basis_points / 100)} indicatorClassName={status.bar} aria-label={`${budget.category_name}: ${Math.floor(budget.usage_basis_points / 100)}% used`} />
                 <p className="tabular mt-1 text-xs text-ink-subtle">{cad(budget.spent_cents)} of {cad(budget.limit_cents)}</p>
               </li>
             );
           })}
         </ul>
       )}
-    </Card>
-  );
-}
-
-/** Spending Penny labelled a want: the easiest place to find savings, without judgement. */
-function Wants({ dashboard, onAsk }: { dashboard: Dashboard; onAsk: (question: string) => void }) {
-  const wants = dashboard.transactions.filter((item) => item.necessity === "want").sort((a, b) => b.amount_cents - a.amount_cents);
-  return (
-    <Card className="p-5 sm:p-6">
-      <h2 className="text-lg font-semibold tracking-tight text-ink">Wants this month</h2>
-      <p className="mt-1 text-sm text-ink-subtle">Nice-to-haves, not essentials. Wants are fine; seeing them helps you choose.</p>
-      <p className="tabular mt-4 text-3xl font-semibold tracking-tight text-gold-strong">{cad(dashboard.spending_classification.wants_cents)}</p>
-      {wants.length === 0 ? <p className="mt-3 text-sm text-ink-subtle">No wants recorded this month.</p> : (
-        <ul className="mt-3 divide-y divide-line">
-          {wants.slice(0, 5).map((item) => (
-            <li key={item.id} className="flex items-center justify-between gap-3 py-2 text-sm">
-              <span className="min-w-0"><span className="block truncate font-medium text-ink">{item.description}</span><span className="text-xs text-ink-subtle">{item.category} · {formatShortDate(item.occurred_on)}</span></span>
-              <span className="tabular shrink-0 font-semibold text-ink">{cad(item.amount_cents)}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-      {wants.length > 0 && <Button variant="outline" className="mt-4 w-full" onClick={() => onAsk("Which of my wants this month could I cut back on, and what would it save me?")}><Sparkles className="size-4" aria-hidden="true" />Ask Penny where to trim</Button>}
     </Card>
   );
 }

@@ -11,11 +11,9 @@ import { cn } from "@/lib/utils";
 import { categoryColours } from "./charts";
 import { ZONE_STYLE } from "./money-score";
 import { cad, type View } from "./shared";
-import { useHistory } from "./use-history";
 
 type Props = {
   dashboard: Dashboard;
-  historyVersion: number;
   onNavigate: (view: View) => void;
   onAsk: (question: string) => void;
 };
@@ -27,7 +25,7 @@ const AI_PROMPTS = [
   { icon: TrendingUp, text: "Should I invest or save?" },
 ];
 
-export function TodayView({ dashboard, historyVersion, onNavigate, onAsk }: Props) {
+export function TodayView({ dashboard, onNavigate, onAsk }: Props) {
   const [scoreInfo, setScoreInfo] = useState(false);
   return (
     <div className="mx-auto max-w-7xl space-y-5">
@@ -35,7 +33,7 @@ export function TodayView({ dashboard, historyVersion, onNavigate, onAsk }: Prop
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_24rem] [&>*]:min-w-0">
         <div className="space-y-5">
           <MetricCards dashboard={dashboard} onNavigate={onNavigate} />
-          <SpendingOverview dashboard={dashboard} historyVersion={historyVersion} onNavigate={onNavigate} />
+          <SpendingOverview dashboard={dashboard} onNavigate={onNavigate} />
           <div className="grid gap-5 md:grid-cols-[1fr_1.35fr] [&>*]:min-w-0">
             <HealthCard dashboard={dashboard} onExplain={() => setScoreInfo(true)} />
             <PennyCard onAsk={onAsk} onOpen={() => onNavigate("ai")} />
@@ -80,14 +78,14 @@ function MetricCards({ dashboard, onNavigate }: { dashboard: Dashboard; onNaviga
       </Metric>
       <Metric icon={ShieldCheck} tone="bg-info-soft text-info" title="Safe to spend" value={cad(dashboard.spending_power_cents)} onOpen={() => onNavigate("spending")}
         note={<span className="text-ink-subtle">after bills due before payday</span>}>
-        <Bar value={used} className="bg-info" label={`${Math.round(used)}% of this month’s budget used`} caption={`${Math.round(used)}% of budget used`} />
+        <Bar value={used} className="bg-info" label={`${Math.round(used)}% of the budget used ${dashboard.period.phrase}`} caption={`${Math.round(used)}% of budget used`} />
       </Metric>
       <Metric icon={CreditCard} tone="bg-[#f2ecff] text-[#7047b7] dark:bg-[#302847] dark:text-[#c1a5ee]" title="Credit used" value={credit ? percent(credit.utilization_basis_points) : "No card"} onOpen={() => onNavigate("learn")}
         note={<span className="text-ink-subtle">{credit ? `${cad(credit.balance_cents)} of ${cad(credit.credit_limit_cents)}` : "Add a card in Settings"}</span>}>
         {credit && <Bar value={credit.utilization_basis_points / 100} className={credit.utilization_basis_points > 3000 ? "bg-gold" : "bg-[#9c6ade]"} label="Credit utilization" caption={credit.utilization_basis_points > 3000 ? "Above the 30% guideline" : "Under the 30% guideline"} />}
       </Metric>
-      <Metric icon={PiggyBank} tone="bg-gold-soft text-gold-strong" title="Monthly savings" value={cad(home.monthly_saved_cents)} onOpen={() => onNavigate("goals")}
-        note={<span className="text-ink-subtle">kept after spending this month</span>}>
+      <Metric icon={PiggyBank} tone="bg-gold-soft text-gold-strong" title={dashboard.period.single_month ? "Monthly savings" : "Saved"} value={cad(home.monthly_saved_cents)} onOpen={() => onNavigate("goals")}
+        note={<span className="text-ink-subtle">kept after spending {dashboard.period.phrase}</span>}>
         {savedShare !== null && <Bar value={savedShare} className="bg-gold" label={`${savedShare}% of what your goals need`} caption={`${savedShare}% of goal`} />}
       </Metric>
     </section>
@@ -154,10 +152,9 @@ export function categoryIcon(category: Category | undefined, kind: Transaction["
   return (category && (CATEGORY_ICONS[category.id] ?? (category.parent_id ? CATEGORY_ICONS[category.parent_id] : undefined))) ?? Dumbbell;
 }
 
-function SpendingOverview({ dashboard, historyVersion, onNavigate }: { dashboard: Dashboard; historyVersion: number; onNavigate: (view: View) => void }) {
-  const [range, setRange] = useState<"month" | "quarter">("month");
-  const quarter = useHistory(dashboard.current_month.slice(0, 7) === dashboard.active_month.slice(0, 7) ? shiftMonth(dashboard.active_month, -2) : dashboard.active_month, dashboard.active_month, historyVersion);
-  const items = range === "month" ? dashboard.category_spending : quarter.data?.categories ?? [];
+function SpendingOverview({ dashboard, onNavigate }: { dashboard: Dashboard; onNavigate: (view: View) => void }) {
+  const { period } = dashboard;
+  const items = dashboard.category_spending;
   const total = items.reduce((sum, item) => sum + item.spent_cents, 0);
   const colourFor = categoryColours(dashboard.categories);
   const byId = new Map(dashboard.categories.map((category) => [category.id, category]));
@@ -168,13 +165,8 @@ function SpendingOverview({ dashboard, historyVersion, onNavigate }: { dashboard
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold tracking-tight text-ink">Spending overview</h2>
-          <p className="mt-0.5 text-sm text-ink-muted">You’ve spent <span className="tabular font-semibold text-ink">{cad(total)}</span> {range === "month" ? "this month" : "in the last 3 months"}.</p>
+          <p className="mt-0.5 text-sm text-ink-muted">You’ve spent <span className="tabular font-semibold text-ink">{cad(total)}</span> {period.phrase}.</p>
         </div>
-        <label className="sr-only" htmlFor="overview-range">Range</label>
-        <select id="overview-range" value={range} onChange={(event) => setRange(event.target.value as typeof range)} className="min-h-10 rounded-xl border border-line bg-surface px-3 text-sm font-medium text-ink">
-          <option value="month">This month</option>
-          <option value="quarter">Last 3 months</option>
-        </select>
       </div>
 
       {total === 0 ? <p className="mt-5 rounded-xl bg-sage-soft p-4 text-sm text-ink-subtle">No spending recorded yet.</p> : (
@@ -198,11 +190,11 @@ function SpendingOverview({ dashboard, historyVersion, onNavigate }: { dashboard
         </>
       )}
 
-      {range === "month" && change !== null && (
+      {change !== null && (
         <button type="button" onClick={() => onNavigate("spending")} className={cn("mt-4 flex w-full items-center gap-3 rounded-2xl p-3 text-left transition-colors sm:p-4", change <= 0 ? "bg-zone-green-soft hover:brightness-95" : "bg-gold-soft hover:brightness-95")}>
           <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-surface/70" aria-hidden="true">{change <= 0 ? <TrendingDown className="size-5 text-[#0d7a4d] dark:text-zone-green" /> : <TrendingUp className="size-5 text-gold-strong" />}</span>
           <span className="min-w-0 flex-1">
-            <span className="block text-sm font-semibold text-ink">You’re spending {percent(change)} {change <= 0 ? "less" : "more"} than last month so far.</span>
+            <span className="block text-sm font-semibold text-ink">{period.phrase === "this month" ? `You’re spending ${percent(change)} ${change <= 0 ? "less" : "more"} than last month so far.` : `You spent ${percent(change)} ${change <= 0 ? "less" : "more"} than the period before.`}</span>
             <span className="block text-xs text-ink-muted">Keep flexible spending under <span className="tabular font-semibold">{cad(dashboard.home.weekly_flexible_cents)}</span> this week to stay on track.</span>
           </span>
           <ChevronRight className="size-5 shrink-0 text-ink-muted" aria-hidden="true" />
@@ -210,12 +202,6 @@ function SpendingOverview({ dashboard, historyVersion, onNavigate }: { dashboard
       )}
     </Card>
   );
-}
-
-function shiftMonth(month: string, count: number): string {
-  const [year, monthNumber] = month.split("-").map(Number);
-  const index = year * 12 + monthNumber - 1 + count;
-  return `${Math.floor(index / 12)}-${String((index % 12) + 1).padStart(2, "0")}-01`;
 }
 
 // ------------------------------------------------------------------ right column
@@ -237,7 +223,7 @@ function RecentTransactions({ dashboard, onOpen }: { dashboard: Dashboard; onOpe
   const rows = dashboard.transactions.slice(0, 5);
   return (
     <SideCard title="Recent transactions" action="View all" onOpen={onOpen}>
-      {rows.length === 0 ? <p className="mt-3 text-sm text-ink-subtle">No transactions this month yet.</p> : (
+      {rows.length === 0 ? <p className="mt-3 text-sm text-ink-subtle">No transactions {dashboard.period.phrase} yet.</p> : (
         <table className="mt-2 w-full table-fixed text-sm">
           <caption className="sr-only">Five most recent transactions</caption>
           <thead><tr className="text-left text-xs text-ink-subtle"><th scope="col" className="w-14 py-2 font-medium">Date</th><th scope="col" className="py-2 font-medium">Merchant</th><th scope="col" className="hidden w-28 py-2 font-medium sm:table-cell xl:hidden">Category</th><th scope="col" className="w-24 py-2 text-right font-medium">Amount</th></tr></thead>
