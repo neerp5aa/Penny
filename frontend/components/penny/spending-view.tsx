@@ -1,16 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import { Copy, Pencil, Plus, ReceiptText, Repeat, Target } from "lucide-react";
+import { Copy, Pencil, Plus, ReceiptText, Repeat, Sparkles, Target } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import type { Budget, Dashboard, Transaction } from "@/lib/api";
+import type { Budget, BudgetSuggestion, Dashboard, Transaction } from "@/lib/api";
 import { addMonths } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { CashFlowChart, CategoryBars, categoryColours } from "./charts";
 import { type RecurringActions, RecurringView } from "./recurring-view";
 import { cad, EmptyState, SectionHeading } from "./shared";
+import { BudgetSuggestionsDialog, SpendingTake } from "./smart-cards";
 import { TransactionsPanel } from "./transactions-panel";
 import { useHistory } from "./use-history";
 
@@ -30,6 +31,7 @@ type Props = {
   onAddBudget: () => void;
   onEditBudget: (item: Budget) => void;
   onCopyBudgets: (fromMonth: string) => void;
+  onApplyBudgets: (month: string, picked: BudgetSuggestion[]) => Promise<string | null>;
 };
 
 export function budgetStatus(budget: Budget): { label: string; tone: "danger" | "gold" | "accent"; bar: string } {
@@ -58,6 +60,7 @@ export function SpendingView(props: Props) {
       {tab === "transactions" ? (
         <div id="spending-panel-transactions" role="tabpanel" aria-labelledby="spending-tab-transactions" className="space-y-8">
           <TransactionsPanel dashboard={dashboard} onAdd={props.onAddTransaction} onEdit={props.onEditTransaction} onDelete={props.onDeleteTransaction} />
+          <SpendingTake dashboard={dashboard} version={props.historyVersion} onAsk={props.onAsk} />
           <Budgets {...props} />
           <Trends dashboard={dashboard} historyVersion={props.historyVersion} onSelectMonth={props.onSelectMonth} />
         </div>
@@ -70,11 +73,14 @@ export function SpendingView(props: Props) {
   );
 }
 
-function Budgets({ dashboard, onAddBudget, onEditBudget, onCopyBudgets }: Props) {
+function Budgets({ dashboard, onAddBudget, onEditBudget, onCopyBudgets, onApplyBudgets }: Props) {
+  const [suggesting, setSuggesting] = useState(false);
   const { totals, period } = dashboard;
   const previousMonth = addMonths(dashboard.active_month, -1);
   const canCopy = dashboard.data_months.includes(previousMonth);
   const editable = period.single_month;
+  // Suggestions are made for the current month, from the three months before it.
+  const canSuggest = editable && dashboard.active_month === dashboard.current_month;
   const carried = dashboard.budgets.some((budget) => budget.carried_over);
   const over = totals.budget_remaining_cents < 0;
   return (
@@ -88,7 +94,8 @@ function Budgets({ dashboard, onAddBudget, onEditBudget, onCopyBudgets }: Props)
           </p>
         </div>
         {editable && (
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            {canSuggest && <Button variant="outline" size="sm" onClick={() => setSuggesting(true)}><Sparkles className="size-4" aria-hidden="true" />Suggest budgets</Button>}
             {canCopy && dashboard.budgets.length === 0 && <Button variant="outline" size="sm" onClick={() => onCopyBudgets(previousMonth)}><Copy className="size-4" aria-hidden="true" />Copy last month</Button>}
             <Button variant="secondary" size="sm" onClick={onAddBudget}><Plus className="size-4" aria-hidden="true" />Add budget</Button>
           </div>
@@ -123,6 +130,7 @@ function Budgets({ dashboard, onAddBudget, onEditBudget, onCopyBudgets }: Props)
           })}
         </ul>
       )}
+      <BudgetSuggestionsDialog open={suggesting} onClose={() => setSuggesting(false)} onApply={async (month, picked) => { const error = await onApplyBudgets(month, picked); if (!error) setSuggesting(false); return error; }} />
     </Card>
   );
 }

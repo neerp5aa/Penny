@@ -124,3 +124,35 @@ def history_items(
         {"role": "user", "content": snapshot_text},
         *({"role": role, "content": content} for role, content in messages),
     ]
+
+
+async def ask_json(
+    settings: Settings, instructions: str, prompt: str, name: str, schema: dict[str, Any]
+) -> dict[str, Any]:
+    """One tool-free model call that must return JSON matching `schema`.
+
+    Raises ModelUnavailable without a key or when the response is incomplete or invalid.
+    """
+    if not settings.openai_api_key:
+        raise ModelUnavailable("no_api_key")
+    client = AsyncOpenAI(
+        api_key=settings.openai_api_key, timeout=settings.coach_timeout_seconds, max_retries=1
+    )
+    response = await client.responses.create(
+        model=settings.openai_model,
+        instructions=instructions,
+        input=[{"role": "user", "content": prompt}],
+        max_output_tokens=MAX_OUTPUT_TOKENS,
+        reasoning={"effort": "low"},
+        store=False,
+        text={"format": {"type": "json_schema", "name": name, "strict": True, "schema": schema}},
+    )
+    if response.status != "completed" or not response.output_text:
+        raise ModelUnavailable("incomplete response")
+    try:
+        value = json.loads(response.output_text)
+    except json.JSONDecodeError as error:
+        raise ModelUnavailable("invalid JSON") from error
+    if not isinstance(value, dict):
+        raise ModelUnavailable("unexpected shape")
+    return value

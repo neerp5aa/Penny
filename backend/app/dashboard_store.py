@@ -94,6 +94,8 @@ from app.history_fixtures import build_history_budgets, build_history_transactio
 from app.models import Account, Transaction
 
 MAX_HISTORY_MONTHS = 24
+UNUSUAL_MULTIPLE = 3
+UNUSUAL_MINIMUM_CENTS = 4_000
 # Account types whose balance is money you can spend day to day.
 SPENDABLE_TYPES = ("chequing", "cash")
 
@@ -493,6 +495,30 @@ class DashboardStore:
             ),
         )
 
+    def _flag_unusual(self, rows: list[Transaction]) -> list[Transaction]:
+        """Marks everyday purchases at least 3x their category's average over the last 6 months.
+
+        Bills and small amounts are never flagged, and a category needs a few purchases first.
+        """
+        since = add_months(self.active_month, -6)
+        amounts: dict[str | None, dict[str, int]] = {}
+        for t in self._transactions.values():
+            if t.kind == "spending" and not t.bill_id and t.occurred_on >= since:
+                amounts.setdefault(t.category_id, {})[t.id] = t.amount_cents
+        flagged = []
+        for t in rows:
+            # Compare against the category's other purchases, so a big one can't hide itself.
+            usual = [a for i, a in amounts.get(t.category_id, {}).items() if i != t.id]
+            unusual = (
+                t.kind == "spending"
+                and not t.bill_id
+                and t.amount_cents >= UNUSUAL_MINIMUM_CENTS
+                and len(usual) >= 3
+                and t.amount_cents * len(usual) >= UNUSUAL_MULTIPLE * sum(usual)
+            )
+            flagged.append(t.model_copy(update={"unusual": True}) if unusual else t)
+        return flagged
+
     @staticmethod
     def _with_necessity(item: Transaction) -> Transaction:
         if item.kind != "spending":
@@ -760,7 +786,7 @@ class DashboardStore:
                     )
                 )
             goals = [self._goal(item) for item in self._goals.values()]
-            monthly = [self._with_necessity(item) for item in monthly]
+            monthly = self._flag_unusual([self._with_necessity(item) for item in monthly])
             credit_account = next(iter(self._accounts_of("credit")), None)
             liabilities = sum(item.balance_cents for item in self._accounts_of("credit"))
             asset_balance = sum(
@@ -1441,14 +1467,16 @@ class DashboardStore:
             return self.dashboard_for_user(user_id, start)
         base = self.dashboard_for_user(user_id, month_start(end))
         with self._lock:
-            rows = sorted(
-                (
-                    self._with_necessity(t)
-                    for t in self._transactions.values()
-                    if start <= t.occurred_on <= end
-                ),
-                key=lambda item: item.occurred_on,
-                reverse=True,
+            rows = self._flag_unusual(
+                sorted(
+                    (
+                        self._with_necessity(t)
+                        for t in self._transactions.values()
+                        if start <= t.occurred_on <= end
+                    ),
+                    key=lambda item: item.occurred_on,
+                    reverse=True,
+                )
             )
             months = months_between(start, end)
             # A month only partly inside the period counts for its share of days (floored).

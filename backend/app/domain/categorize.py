@@ -21,8 +21,8 @@ _CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("cat-school", ("tuition", "course", "textbook", "campus store", "student fee")),
     ("cat-health", ("pharmacy", "shoppers drug", "clinic", "dental", "physio", "optometr", "gym",
                     "fitness", "goodlife")),
-    ("cat-groceries", ("market", "grocer", "sobeys", "loblaws", "superstore", "no frills",
-                       "metro", "costco", "walmart")),
+    ("cat-groceries", ("market", "grocer", "grocery", "groceries", "sobeys", "loblaws",
+                       "superstore", "no frills", "metro", "costco", "walmart")),
     ("cat-eating-out", ("café", "cafe", "coffee", "restaurant", "pizza", "sushi", "burger",
                         "bakery", "takeout", "mcdonald", "subway")),
     ("cat-fun", ("movie", "cinema", "netflix", "spotify", "streaming", "disney", "concert",
@@ -34,7 +34,8 @@ _INCOME_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("cat-allowance", ("allowance",)),
     ("cat-benefits", ("pension", "benefit", "gst", "hst credit", "ccb", "ei ", "cerb")),
     ("cat-refund", ("refund", "rebate", "cashback", "cash back")),
-    ("cat-income", ("pay", "payroll", "salary", "wage", "paycheque", "paycheck", "deposit")),
+    ("cat-income", ("pay", "paid", "payroll", "salary", "wage", "paycheque", "paycheck",
+                    "deposit")),
 )
 
 # Categories that are essential by default, plus description words that mark a want anyway.

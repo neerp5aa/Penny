@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import { CreditCalculator } from "./credit-tool";
 import { LESSON_CONTENT, TRACKS } from "./lessons";
 import { SectionHeading } from "./shared";
+import { LessonExample } from "./smart-cards";
 
 type Props = {
   dashboard: Dashboard;
@@ -151,6 +152,7 @@ function LessonDialog({ lesson, onClose, onComplete }: { lesson: Lesson | null; 
                 <ol className="space-y-3">
                   {content.points.map((point, index) => <li key={point} className="flex gap-3 rounded-xl bg-sage-soft p-3 text-sm leading-relaxed text-ink"><span className="grid size-6 shrink-0 place-items-center rounded-full bg-accent text-xs font-semibold text-white" aria-hidden="true">{index + 1}</span>{point}</li>)}
                 </ol>
+                <div className="mt-4"><LessonExample lessonId={lesson.id} /></div>
                 <Button className="mt-5 w-full" onClick={() => setStep("quiz")}>Quick check<ArrowRight className="size-4" aria-hidden="true" /></Button>
               </>
             )}

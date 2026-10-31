@@ -5,6 +5,8 @@ from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.auth import CurrentUser, get_current_user
+from app.coach import assist
+from app.coach.assist import AssistText, BudgetSuggestions, ParsedTransaction, QuickAddRequest
 from app.coach.coach import Coach
 from app.coach.models import (
     ApprovalRequest,
@@ -363,21 +365,76 @@ def calculate_credit_utilization(request: CreditUtilizationRequest) -> CreditUti
 
 
 @app.get("/api/v1/categorize", response_model=CategorySuggestion, tags=["transactions"])
-def suggest_category(
+async def suggest_category(
     current_user: AuthenticatedUser,
     description: Annotated[str, Query(min_length=1, max_length=160)],
     kind: Annotated[Literal["income", "spending"], Query()] = "spending",
 ) -> CategorySuggestion:
-    """Rule-based category and need/want suggestion for a merchant description."""
+    """Keyword rules first; when they don't recognise the merchant, the model picks a category."""
     dashboard_store.require_owner(current_user.id)
+    categories = dashboard_store.dashboard_for_user(current_user.id).categories
     result = categorize(description, kind)
-    names = {c.id: c.name for c in dashboard_store.dashboard_for_user(current_user.id).categories}
+    category_id, source = result.category_id, "rules" if result.category_id else None
+    if category_id is None:
+        category_id = await assist.pick_category(get_settings(), description, kind, categories)
+        source = "ai" if category_id else None
+    names = {c.id: c.name for c in categories}
     return CategorySuggestion(
-        category_id=result.category_id,
-        category_name=names.get(result.category_id) if result.category_id else None,
-        necessity=necessity(description, result.category_id) if kind == "spending" else None,
+        category_id=category_id,
+        category_name=names.get(category_id) if category_id else None,
+        necessity=necessity(description, category_id) if kind == "spending" else None,
         matched=result.matched,
+        source=source,
     )
+
+
+@app.post("/api/v1/assist/parse-transaction", response_model=ParsedTransaction, tags=["assist"])
+async def parse_transaction(
+    request: QuickAddRequest, current_user: AuthenticatedUser
+) -> ParsedTransaction:
+    """Turn a one-line note into transaction fields. Nothing is saved; the user confirms."""
+    dashboard_store.require_owner(current_user.id)
+    categories = dashboard_store.dashboard_for_user(current_user.id).categories
+    return await assist.parse_transaction(
+        get_settings(), request.text.strip(), dashboard_store.today(), categories
+    )
+
+
+@app.get("/api/v1/assist/spending-take", response_model=AssistText, tags=["assist"])
+async def spending_take(
+    current_user: AuthenticatedUser,
+    month: ViewMonth = None,
+    start: Annotated[date | None, Query()] = None,
+    end: Annotated[date | None, Query()] = None,
+) -> AssistText:
+    """Three short points about the period on screen, grounded in its totals."""
+    if (start is None) != (end is None):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Send both start and end")
+    view = (
+        dashboard_store.dashboard_for_range(current_user.id, start, end)
+        if start and end
+        else dashboard_store.dashboard_for_user(current_user.id, month)
+    )
+    return await assist.spending_take(get_settings(), view)
+
+
+@app.get("/api/v1/assist/budget-suggestions", response_model=BudgetSuggestions, tags=["assist"])
+async def budget_suggestions(current_user: AuthenticatedUser) -> BudgetSuggestions:
+    """Suggested limits from recent spending. Applying any of them is a separate user action."""
+    dashboard_store.require_owner(current_user.id)
+    return await assist.budget_suggestions(get_settings(), dashboard_store, current_user.id)
+
+
+@app.get("/api/v1/assist/lesson-example/{lesson_id}", response_model=AssistText, tags=["assist"])
+async def lesson_example(lesson_id: str, current_user: AuthenticatedUser) -> AssistText:
+    """Connect a lesson to the user's own fictional numbers."""
+    dashboard_store.require_owner(current_user.id)
+    result = await assist.lesson_example(
+        get_settings(), dashboard_store, current_user.id, lesson_id
+    )
+    if result is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Lesson not found")
+    return result
 
 
 @app.post(

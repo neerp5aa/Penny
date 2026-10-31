@@ -465,6 +465,8 @@ class CategorySuggestion(DashboardModel):
     category_name: str | None
     necessity: Literal["need", "want"] | None
     matched: str | None
+    # "rules" for a keyword match, "ai" when the model picked it, None when nothing fit.
+    source: Literal["rules", "ai"] | None = None
 
 
 class BillWrite(DashboardModel):

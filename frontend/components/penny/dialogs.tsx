@@ -1,11 +1,11 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
-import { ArrowDownLeft, ArrowRightLeft, ArrowUpRight, LoaderCircle, PiggyBank, Repeat, Trash2 } from "lucide-react";
+import { FormEvent, useMemo, useRef, useState } from "react";
+import { ArrowDownLeft, ArrowRightLeft, ArrowUpRight, LoaderCircle, PiggyBank, Repeat, Sparkles, Trash2, Wand2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input, Select } from "@/components/ui/input";
-import { type AccountType, type BillFrequency, type Budget, type Category, type CategorySuggestion, type Dashboard, dashboardApi, type SavingsGoal, type SplitTransactionWrite, type Transaction, type TransactionWrite } from "@/lib/api";
+import { type AccountType, type BillFrequency, type Budget, type Category, type CategorySuggestion, type Dashboard, assistApi, dashboardApi, type ParsedTransaction, type SavingsGoal, type SplitTransactionWrite, type Transaction, type TransactionWrite } from "@/lib/api";
 import { DatePicker, isoToday } from "@/components/ui/date-picker";
 import { FREQUENCIES, nextAfter, PaymentMode } from "./bill-options";
 import { defaultTransactionDate, formatMonth } from "@/lib/format";
@@ -97,6 +97,9 @@ function TransactionForm({ item, dashboard, onSubmit, onRequestDelete, onCreate 
   const [splits, setSplits] = useState<SplitDraft>({});
   const [splitErrors, setSplitErrors] = useState<Record<string, string>>({});
   const [repeat, setRepeat] = useState<{ on: boolean; frequency: BillFrequency; nextDue: string; auto: boolean }>({ on: false, frequency: "monthly", nextDue: "", auto: true });
+  const [filled, setFilled] = useState<"ai" | "built_in" | null>(null);
+  const amountInput = useRef<HTMLInputElement>(null);
+  const descriptionInput = useRef<HTMLInputElement>(null);
   const splitMode = account === MULTIPLE;
   // Only a new money-out entry paid from one account can become a recurring bill.
   const canRepeat = !item && kind === "spending" && !splitMode;
@@ -117,6 +120,21 @@ function TransactionForm({ item, dashboard, onSubmit, onRequestDelete, onCreate 
       setSuggestion(result);
       if (result.category_id) setCategory(result.category_id);
     } catch { /* Suggestions are optional; the user can still pick a category. */ }
+  }
+
+  /** Copies a quick-add reading into the form. Nothing is saved until the user presses Add. */
+  function fillFrom(parsed: ParsedTransaction) {
+    setKind(parsed.kind);
+    if (descriptionInput.current) descriptionInput.current.value = parsed.description;
+    if (amountInput.current && parsed.amount_cents !== null) amountInput.current.value = centsToInput(String(parsed.amount_cents));
+    setDate(parsed.occurred_on);
+    const known = dashboard.categories.find((c) => c.id === parsed.category_id && c.kind === parsed.kind);
+    setCategory(known?.id ?? "");
+    setCategoryTouched(Boolean(known));
+    setSuggestion(null);
+    setAmountError("");
+    setFilled(parsed.source);
+    if (account === MULTIPLE) setAccount(dashboard.accounts[0]?.id ?? "");
   }
 
   function chooseAccount(value: string) {
@@ -165,6 +183,7 @@ function TransactionForm({ item, dashboard, onSubmit, onRequestDelete, onCreate 
 
   return (
     <form onSubmit={submit} className="space-y-4">
+      {!item && <QuickAdd onParsed={fillFrom} filled={filled} />}
       <div role="radiogroup" aria-label="Type" className="grid grid-cols-2 gap-2">
         {(["spending", "income"] as const).map((value) => {
           const option = KIND_STYLE[value];
@@ -184,17 +203,17 @@ function TransactionForm({ item, dashboard, onSubmit, onRequestDelete, onCreate 
             <span className="tabular shrink-0 whitespace-nowrap text-3xl font-semibold" aria-hidden="true">{style.sign}$</span>
             {splitMode
               ? <output {...props} className="tabular flex min-h-16 w-full min-w-0 items-center px-1 text-3xl font-semibold text-ink">{centsToInput(String(splitTotal))}</output>
-              : <input {...props} name="amount" inputMode="decimal" autoComplete="off" placeholder="0.00" defaultValue={item ? centsToInput(String(item.amount_cents)) : ""} required className="tabular min-h-16 w-full min-w-0 bg-transparent px-1 text-3xl font-semibold text-ink placeholder:text-ink-subtle/60 focus:outline-none" />}
+              : <input {...props} ref={amountInput} name="amount" inputMode="decimal" autoComplete="off" placeholder="0.00" defaultValue={item ? centsToInput(String(item.amount_cents)) : ""} required className="tabular min-h-16 w-full min-w-0 bg-transparent px-1 text-3xl font-semibold text-ink placeholder:text-ink-subtle/60 focus:outline-none" />}
           </div>
         )}
       </Field>
 
       <Field label="Description">
-        {(props) => <Input {...props} name="description" placeholder={kind === "income" ? "e.g. Harbour Books pay" : "e.g. Starbucks"} defaultValue={item?.description} required maxLength={160} onBlur={(event) => void suggestCategory(event.target.value)} />}
+        {(props) => <Input {...props} ref={descriptionInput} name="description" placeholder={kind === "income" ? "e.g. Harbour Books pay" : "e.g. Starbucks"} defaultValue={item?.description} required maxLength={160} onBlur={(event) => void suggestCategory(event.target.value)} />}
       </Field>
 
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Category" hint={suggestion?.category_name && !categoryTouched && category === suggestion.category_id ? `Picked automatically${suggestion.necessity ? ` · a ${suggestion.necessity}` : ""}` : undefined}>
+        <Field label="Category" hint={suggestion?.category_name && !categoryTouched && category === suggestion.category_id ? `${suggestion.source === "ai" ? "Picked by Penny AI" : "Picked automatically"}${suggestion.necessity ? ` · a ${suggestion.necessity}` : ""}` : undefined}>
           {(props) => (
             <Select {...props} value={category} onChange={(event) => { if (event.target.value === NEW) { setAdding("category"); return; } setCategory(event.target.value); setCategoryTouched(true); }}>
               <option value="">Uncategorized</option>
@@ -253,6 +272,44 @@ function TransactionForm({ item, dashboard, onSubmit, onRequestDelete, onCreate 
         </Button>
       </div>
     </form>
+  );
+}
+
+const QUICK_ADD_EXAMPLES = ["coffee 4.50 at Starbucks yesterday", "got paid 1264 from Harbour Books", "groceries 62.10 oct 22"];
+
+/** One line of plain language ("lunch 14 friday") read into the form fields below. */
+function QuickAdd({ onParsed, filled }: { onParsed: (parsed: ParsedTransaction) => void; filled: "ai" | "built_in" | null }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const hintId = "quick-add-hint";
+
+  async function read(value = text) {
+    if (!value.trim() || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      onParsed(await assistApi.parseTransaction(value.trim().slice(0, 200)));
+    } catch {
+      setError("Penny couldn’t read that. Fill in the fields below instead.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rounded-2xl border border-accent/30 bg-accent-soft/50 p-3">
+      <label htmlFor="quick-add" className="flex items-center gap-1.5 text-sm font-semibold text-ink"><Wand2 className="size-4 text-accent-strong" aria-hidden="true" />Quick add</label>
+      <div className="mt-2 flex gap-2">
+        <Input id="quick-add" value={text} maxLength={200} aria-describedby={hintId} placeholder={QUICK_ADD_EXAMPLES[0]} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void read(); } }} className="min-w-0 flex-1 bg-surface" />
+        <Button type="button" variant="outline" onClick={() => void read()} disabled={busy || !text.trim()} className="shrink-0 bg-surface">
+          {busy ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : <Sparkles className="size-4" aria-hidden="true" />}Fill in
+        </Button>
+      </div>
+      <p id={hintId} role="status" className={cn("mt-1.5 text-xs", error ? "text-danger" : "text-ink-subtle")}>
+        {error || (filled ? `Filled in ${filled === "ai" ? "by Penny AI" : "from your note"}. Check the details, then add it.` : "Type it like a note. Penny fills in the form, and nothing saves until you add it.")}
+      </p>
+    </div>
   );
 }
 

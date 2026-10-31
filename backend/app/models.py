@@ -56,6 +56,8 @@ class Transaction(StrictModel):
     # it on the due date, False when the user marked it paid, None for history or a manual entry.
     bill_id: str | None = None
     paid_automatically: bool | None = None
+    # Far larger than this category's usual purchase (filled in when a snapshot is built).
+    unusual: bool = False
 
 
 class Budget(StrictModel):

@@ -178,6 +178,7 @@ function TransactionIdentity({ item }: { item: Transaction }) {
           <span className="truncate">{item.category} · {formatShortDate(item.occurred_on)}</span>
           {item.bill_id && <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-[#f2ecff] px-1.5 py-px text-[11px] font-semibold text-[#7047b7] dark:bg-[#302847] dark:text-[#c1a5ee]"><Repeat className="size-2.5" aria-hidden="true" />Recurring</span>}
           {item.necessity && <span className={cn("shrink-0 rounded-full px-1.5 py-px text-[11px] font-semibold", item.necessity === "need" ? "bg-info-soft text-info" : "bg-gold-soft text-gold-strong")}>{item.necessity === "need" ? "Need" : "Want"}</span>}
+          {item.unusual && <span className="shrink-0 rounded-full bg-danger-soft px-1.5 py-px text-[11px] font-semibold text-danger" title="At least 3 times what you usually spend on one purchase in this category">Unusual</span>}
           {item.auto_categorized && <span className="shrink-0 rounded-full bg-accent-soft px-1.5 py-px text-[11px] font-semibold text-accent-strong" title="Category picked automatically from the merchant name">Auto</span>}
         </span>
       </span>

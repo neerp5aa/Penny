@@ -19,7 +19,7 @@ import { usePreferences } from "@/components/penny/preferences";
 import { cad, describeError, NAVIGATION, type View } from "@/components/penny/shared";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { ToastProvider, useToast } from "@/components/ui/toast";
-import { type Bill, type Budget, type Dashboard, dashboardApi, type Lesson, type Mission, type SavingsGoal, type Transaction } from "@/lib/api";
+import { type Bill, type Budget, type BudgetSuggestion, type Dashboard, dashboardApi, type Lesson, type Mission, type SavingsGoal, type Transaction } from "@/lib/api";
 import { addMonths, formatMonth } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -284,6 +284,18 @@ function PennyApp() {
     void mutate(() => dashboardApi.copyBudgets(fromMonth, month), (data) => ({ title: "Budgets copied", description: `${formatMonth(month)} now has ${data.budgets.length} category limits.` }))
       .then((error) => { if (error) toast({ title: "Nothing to copy", description: error, tone: "error" }); });
   };
+  /** Applies the budget suggestions the user ticked, one normal create/update call each. */
+  const applyBudgetSuggestions = (forMonth: string, picked: BudgetSuggestion[]) =>
+    mutate(async () => {
+      let data: Dashboard | null = null;
+      for (const item of picked) {
+        data = item.budget_id
+          ? await dashboardApi.updateBudget(item.budget_id, item.suggested_cents, month)
+          : await dashboardApi.createBudget({ category_id: item.category_id, month_start: forMonth, limit_cents: item.suggested_cents }, month);
+      }
+      if (!data) throw new Error("Pick at least one budget");
+      return data;
+    }, `${picked.length} budget${picked.length === 1 ? "" : "s"} updated`);
   const completeMission = (mission: Mission) => {
     void mutate(() => dashboardApi.completeMission(mission.id, month), `Mission complete · +${mission.xp_reward} XP`)
       .then((error) => { if (error) toast({ title: "Couldn’t complete the mission", description: error, tone: "error" }); });
@@ -325,7 +337,7 @@ function PennyApp() {
         <main id="main" tabIndex={-1} className="mx-auto max-w-7xl px-4 pb-[calc(6.5rem+env(safe-area-inset-bottom))] pt-5 focus:outline-none sm:px-6 lg:px-10 lg:pb-12 lg:pt-8">
           <div key={view} className={monthLoading ? "animate-fade opacity-70 transition-opacity duration-200" : "animate-fade transition-opacity duration-200"} aria-busy={monthLoading}>
             {view === "today" && <TodayView dashboard={dashboard} onNavigate={navigate} onAsk={askPenny} />}
-            {view === "spending" && <SpendingView dashboard={dashboard} historyVersion={historyVersion} tab={spendingTab} onTabChange={setSpendingTab} recurring={{ onMarkPaid: markBillPaid, onSave: saveBill, onDelete: confirmDeleteBill }} onAsk={askPenny} onSelectMonth={goToMonth} onAddTransaction={() => setTransactionTarget("new")} onEditTransaction={setTransactionTarget} onDeleteTransaction={confirmDeleteTransaction} onAddBudget={() => setBudgetTarget("new")} onEditBudget={setBudgetTarget} onCopyBudgets={copyBudgets} />}
+            {view === "spending" && <SpendingView dashboard={dashboard} historyVersion={historyVersion} tab={spendingTab} onTabChange={setSpendingTab} recurring={{ onMarkPaid: markBillPaid, onSave: saveBill, onDelete: confirmDeleteBill }} onAsk={askPenny} onSelectMonth={goToMonth} onAddTransaction={() => setTransactionTarget("new")} onEditTransaction={setTransactionTarget} onDeleteTransaction={confirmDeleteTransaction} onAddBudget={() => setBudgetTarget("new")} onEditBudget={setBudgetTarget} onCopyBudgets={copyBudgets} onApplyBudgets={applyBudgetSuggestions} />}
             {view === "goals" && <GoalsView dashboard={dashboard} onAsk={askPenny} onAdd={() => setGoalTarget("new")} onEdit={setGoalTarget} onAddMoney={setAddMoneyTarget} onComplete={(goal) => void mutate(() => dashboardApi.updateGoal(goal.id, { status: "completed" }, month), `${goal.name} reached`)} />}
             {view === "invest" && <InvestView dashboard={dashboard} onNavigate={navigate} />}
             {view === "learn" && <LearnView dashboard={dashboard} onCompleteLesson={completeLesson} onCompleteMission={completeMission} />}

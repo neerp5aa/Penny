@@ -3,7 +3,7 @@ import { getSupabaseAccessToken } from "./supabase";
 export type AccountType = "chequing" | "savings" | "credit" | "cash" | "investment" | "other";
 export type Account = { id: string; name: string; account_type: AccountType; balance_cents: number; credit_limit_cents: number | null };
 export type Category = { id: string; name: string; colour_token: string; kind: "income" | "spending"; parent_id: string | null; custom: boolean };
-export type Transaction = { id: string; description: string; category: string; account_id: string; category_id: string | null; amount_cents: number; kind: "income" | "spending"; occurred_on: string; necessity: "need" | "want" | null; auto_categorized: boolean; bill_id: string | null; paid_automatically: boolean | null };
+export type Transaction = { id: string; description: string; category: string; account_id: string; category_id: string | null; amount_cents: number; kind: "income" | "spending"; occurred_on: string; necessity: "need" | "want" | null; auto_categorized: boolean; bill_id: string | null; paid_automatically: boolean | null; unusual: boolean };
 export type Budget = { id: string; category_id: string; category_name: string; month_start: string; limit_cents: number; spent_cents: number; remaining_cents: number; usage_basis_points: number; carried_over: boolean };
 export type GoalContribution = { id: string; amount_cents: number; from_account_id: string; to_account_id: string | null; occurred_on: string; source: "you" | "penny" };
 export type SavingsGoal = { id: string; name: string; target_cents: number; current_cents: number; target_date: string | null; status: "active" | "completed" | "paused"; progress_basis_points: number; monthly_needed_cents: number | null; account_id: string | null; contributed_this_month_cents: number; recent_contributions: GoalContribution[] };
@@ -79,10 +79,10 @@ export type History = {
   data_months: string[];
 };
 export type Growth = { points: { year: number; contributed_cents: number; balance_cents: number }[]; contributed_cents: number; balance_cents: number; growth_cents: number; fees_cost_cents: number };
-export type CategorySuggestion = { category_id: string | null; category_name: string | null; necessity: "need" | "want" | null; matched: string | null };
+export type CategorySuggestion = { category_id: string | null; category_name: string | null; necessity: "need" | "want" | null; matched: string | null; source: "rules" | "ai" | null };
 export type CreditUtilization = { balance_cents: number; credit_limit_cents: number; utilization_basis_points: number; within_common_guideline: boolean };
 
-export type TransactionWrite = Omit<Transaction, "id" | "category" | "necessity" | "auto_categorized" | "bill_id" | "paid_automatically"> & { repeat?: { frequency: BillFrequency; next_due: string | null; auto_record: boolean } | null };
+export type TransactionWrite = Omit<Transaction, "id" | "category" | "necessity" | "auto_categorized" | "bill_id" | "paid_automatically" | "unusual"> & { repeat?: { frequency: BillFrequency; next_due: string | null; auto_record: boolean } | null };
 /** One purchase or deposit across several accounts; the API saves one transaction per account. */
 export type SplitTransactionWrite = Omit<TransactionWrite, "account_id" | "amount_cents"> & { splits: { account_id: string; amount_cents: number }[] };
 export type GoalWrite = Pick<SavingsGoal, "name" | "target_cents" | "current_cents" | "target_date" | "account_id">;
@@ -191,6 +191,20 @@ export const dashboardApi = {
   importCsv: (csv: string, account_id: string) => authorizedRequest<{ imported: number; skipped: number; errors: string[]; dashboard: Dashboard }>("/api/v1/transactions/import", { method: "POST", body: JSON.stringify({ csv, account_id }) }),
   completeLesson: (id: string) => request(`/api/v1/lessons/${id}/complete`, { method: "POST" }),
   suggestCategory: (description: string, kind: Transaction["kind"]) => authorizedRequest<CategorySuggestion>(`/api/v1/categorize?description=${encodeURIComponent(description)}&kind=${kind}`),
+};
+
+export type AssistSource = "ai" | "built_in";
+export type ParsedTransaction = { description: string; amount_cents: number | null; kind: Transaction["kind"]; occurred_on: string; category_id: string | null; source: AssistSource };
+export type AssistText = { items: string[]; source: AssistSource; model: string | null };
+export type BudgetSuggestion = { category_id: string; budget_id: string | null; category_name: string; current_limit_cents: number | null; suggested_cents: number; average_cents: number; reason: string };
+export type BudgetSuggestions = { month: string; suggestions: BudgetSuggestion[]; summary: AssistText };
+
+/** Smart helpers. They only read data or fill forms; every change still goes through a user action. */
+export const assistApi = {
+  parseTransaction: (text: string) => authorizedRequest<ParsedTransaction>("/api/v1/assist/parse-transaction", { method: "POST", body: JSON.stringify({ text }) }),
+  spendingTake: (start: string, end: string) => authorizedRequest<AssistText>(`/api/v1/assist/spending-take?start=${start}&end=${end}`),
+  budgetSuggestions: () => authorizedRequest<BudgetSuggestions>("/api/v1/assist/budget-suggestions"),
+  lessonExample: (id: string) => authorizedRequest<AssistText>(`/api/v1/assist/lesson-example/${encodeURIComponent(id)}`),
 };
 
 export const historyApi = {
