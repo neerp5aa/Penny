@@ -5,8 +5,12 @@ from collections.abc import Iterable, Sequence
 from datetime import date, timedelta
 
 from app.dashboard_models import (
+    AccountBalance,
+    AccountGoal,
+    AccountsOverview,
     Bill,
     FoundationCheck,
+    Goal,
     LearningProgress,
     Lesson,
     MoneyCalendar,
@@ -20,7 +24,8 @@ from app.domain.categorize import necessity
 from app.domain.finance import format_cad
 from app.domain.money_days import DayInput, DayScore, daily_allowance_cents, score_days, streaks
 from app.domain.recurring import RecurringSeries, detect_fixed_series, next_due, series_key
-from app.models import Transaction
+from app.learning.engine import Learner
+from app.models import Account, Transaction
 
 # ------------------------------------------------------------------ recurring expenses
 
@@ -219,62 +224,115 @@ def build_calendar(
     )
 
 
+# ------------------------------------------------------------------ accounts
+
+SPENDING_ACCOUNT_TYPES = ("chequing", "cash")
+
+
+def build_accounts_overview(
+    accounts: Sequence[Account],
+    goals: Sequence[Goal],
+    transactions: Iterable[Transaction],
+    month: date,
+    today: date,
+) -> AccountsOverview:
+    """Each account's balance, goal money, and this month's flow, plus the totals they add to.
+
+    Net worth = everything in non-credit accounts − what's owed on credit cards.
+    """
+    flows: dict[str, list[int]] = {account.id: [0, 0] for account in accounts}
+    last: dict[str, date] = {}
+    for item in transactions:
+        if item.account_id not in flows or item.occurred_on > today:
+            continue
+        if (item.occurred_on.year, item.occurred_on.month) == (month.year, month.month):
+            flows[item.account_id][0 if item.kind == "income" else 1] += item.amount_cents
+        if item.account_id not in last or item.occurred_on > last[item.account_id]:
+            last[item.account_id] = item.occurred_on
+    rows = []
+    shortfall = 0
+    for account in accounts:
+        credit = account.account_type == "credit"
+        held = [g for g in goals if g.account_id == account.id and g.current_cents > 0]
+        claimed = sum(g.current_cents for g in held)
+        goal_cents = 0 if credit else min(claimed, account.balance_cents)
+        shortfall += 0 if credit else claimed - goal_cents
+        limit = account.credit_limit_cents if credit else None
+        rows.append(
+            AccountBalance(
+                id=account.id,
+                name=account.name,
+                account_type=account.account_type,
+                balance_cents=account.balance_cents,
+                net_cents=-account.balance_cents if credit else account.balance_cents,
+                credit_limit_cents=limit,
+                available_credit_cents=max(0, limit - account.balance_cents) if limit else None,
+                utilization_basis_points=(
+                    account.balance_cents * 10_000 // limit if limit else None
+                ),
+                goals=[
+                    AccountGoal(id=g.id, name=g.name, current_cents=g.current_cents) for g in held
+                ],
+                goal_cents=goal_cents,
+                free_cents=None if credit else account.balance_cents - goal_cents,
+                money_in_cents=flows[account.id][0],
+                money_out_cents=flows[account.id][1],
+                last_activity_on=last.get(account.id),
+            )
+        )
+
+    def total(*types: str) -> int:
+        return sum(a.balance_cents for a in accounts if a.account_type in types)
+
+    assets = sum(a.balance_cents for a in accounts if a.account_type != "credit")
+    owed = total("credit")
+    return AccountsOverview(
+        accounts=rows,
+        spending_cents=total(*SPENDING_ACCOUNT_TYPES),
+        savings_cents=total("savings"),
+        investments_cents=total("investment"),
+        other_cents=total("other"),
+        assets_cents=assets,
+        owed_cents=owed,
+        net_worth_cents=assets - owed,
+        goal_cents=sum(row.goal_cents for row in rows),
+        goal_shortfall_cents=shortfall,
+    )
+
+
 # ------------------------------------------------------------------ learning
 
-LEVEL_SIZE_XP = 150
 
-# Lesson content lives in the client; the server owns ids, tracks, and XP so progress is fair.
-LESSONS: tuple[tuple[str, str, str, int], ...] = (
-    ("budget-basics", "budgeting", "Give every dollar a job", 40),
-    ("needs-vs-wants", "budgeting", "Needs, wants, and the 50/30/20 idea", 40),
-    ("fixed-vs-flexible", "budgeting", "Fixed costs vs flexible spending", 40),
-    ("emergency-fund", "saving", "Build an emergency fund", 50),
-    ("pay-yourself-first", "saving", "Pay yourself first", 40),
-    ("tax-basics", "tax", "How income tax works in Canada", 50),
-    ("student-tax", "tax", "Taxes as a student: credits and refunds", 50),
-    ("credit-utilization", "credit", "Credit utilization, explained", 40),
-    ("card-interest", "credit", "What card interest really costs", 50),
-    ("investing-basics", "investing", "Risk, return, and compounding", 50),
-    ("registered-accounts", "investing", "TFSA, RRSP, and FHSA", 60),
-    ("fees-diversification", "investing", "Fees and diversification", 50),
-)
-LESSON_XP = {lesson_id: xp for lesson_id, _, _, xp in LESSONS}
-
-
-def learning_streak(completion_days: Iterable[date], today: date) -> int:
-    """Consecutive days with a completed lesson, ending today or yesterday."""
-    days = set(completion_days)
-    cursor = today if today in days else today - timedelta(days=1)
-    streak = 0
-    while cursor in days:
-        streak += 1
-        cursor -= timedelta(days=1)
-    return streak
-
-
-def build_learning(completed: dict[str, date], mission_xp: int, today: date) -> LearningProgress:
-    xp = mission_xp + sum(LESSON_XP[lesson_id] for lesson_id in completed)
-    done_days = set(completed.values())
+def build_learning(learner: Learner, mission_xp: int, today: date) -> LearningProgress:
+    """The dashboard's learning summary (Home's streak card), from the learning game's state."""
+    state = learner.state(mission_xp, today)
     monday = today - timedelta(days=today.weekday())
     lessons = [
         Lesson(
-            id=lesson_id,
-            track=track,  # type: ignore[arg-type]
-            title=title,
-            xp_reward=reward,
-            completed=lesson_id in completed,
+            id=card.id,
+            track=card.topic,
+            difficulty=card.tier,
+            title=card.title,
+            xp_reward=card.xp_max,
+            completed=card.passed,
         )
-        for lesson_id, track, title, reward in LESSONS
+        for path in state.topics
+        for card in path.lessons
     ]
+    upcoming = learner.next_lesson()
     return LearningProgress(
-        xp_total=xp,
-        level=1 + xp // LEVEL_SIZE_XP,
-        level_xp=xp % LEVEL_SIZE_XP,
-        level_size_xp=LEVEL_SIZE_XP,
-        streak_days=learning_streak(done_days, today),
-        completed_today=today in done_days,
-        week_activity=[monday + timedelta(days=offset) in done_days for offset in range(7)],
-        next_lesson=next((lesson for lesson in lessons if not lesson.completed), None),
+        xp_total=state.xp_total,
+        level=state.level,
+        level_xp=state.level_xp,
+        level_size_xp=state.level_size_xp,
+        streak_days=state.streak_days,
+        completed_today=state.completed_today,
+        week_activity=[
+            monday + timedelta(days=offset) in learner.activity_days for offset in range(7)
+        ],
+        next_lesson=next(
+            (lesson for lesson in lessons if upcoming and lesson.id == upcoming.id), None
+        ),
         lessons=lessons,
     )
 

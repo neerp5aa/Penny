@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { LayoutList, LogOut, Menu, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Plus, ShieldCheck, SlidersHorizontal, Sun } from "lucide-react";
+import { LogOut, Menu, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Plus, Settings, SlidersHorizontal, Sun } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -14,7 +14,6 @@ import { cn } from "@/lib/utils";
 import { THEME_OPTIONS, type ThemeSetting, usePreferences } from "./preferences";
 import { type PeriodRange, PeriodPicker } from "./period-picker";
 import { cad, NAVIGATION, type View } from "./shared";
-import { AskBar } from "./today-view";
 
 const MONTH_VIEWS: View[] = ["today", "spending"];
 export const THEME_ICONS: Record<ThemeSetting, typeof Sun> = { light: Sun, dark: Moon, system: Monitor };
@@ -22,7 +21,7 @@ export const THEME_ICONS: Record<ThemeSetting, typeof Sun> = { light: Sun, dark:
 export const SHORTCUTS: { keys: string; action: string }[] = [
   { keys: "N", action: "Add a transaction" },
   { keys: "[  ]", action: "Previous / next month" },
-  { keys: "1 – 8", action: "Jump between sections" },
+  { keys: "1 – 9", action: "Jump between sections" },
   { keys: "D", action: "Switch light / dark" },
   { keys: "?", action: "Open display settings" },
 ];
@@ -70,7 +69,7 @@ function AccountSummary({ dashboard }: { dashboard: Dashboard }) {
   );
 }
 
-export function Sidebar({ active, dashboard, collapsed, onToggle, onNavigate, onOpenDisplay }: { active: View; dashboard: Dashboard; collapsed: boolean; onToggle: () => void; onNavigate: (view: View) => void; onOpenDisplay: () => void }) {
+export function Sidebar({ active, dashboard, collapsed, onToggle, onNavigate }: { active: View; dashboard: Dashboard; collapsed: boolean; onToggle: () => void; onNavigate: (view: View) => void }) {
   return (
     <aside data-collapsed={collapsed} className={cn("fixed inset-y-0 left-0 z-30 hidden flex-col overflow-y-auto border-r border-line bg-canvas py-5 transition-[width] duration-200 lg:flex", collapsed ? "w-20 px-3" : "w-64 px-4")}>
       <div className={cn("flex items-center gap-3 px-2", collapsed && "justify-center px-0")}>
@@ -79,7 +78,8 @@ export function Sidebar({ active, dashboard, collapsed, onToggle, onNavigate, on
       </div>
       <nav aria-label="Primary" className="mt-8">
         <ul className="space-y-1">
-          {NAVIGATION.map(({ id, label, icon: Icon }) => (
+          {/* Settings opens from the header's gear menu (All settings), not the sidebar. */}
+          {NAVIGATION.filter((item) => item.id !== "settings").map(({ id, label, icon: Icon }) => (
             <li key={id}>
               <button type="button" title={collapsed ? label : undefined} onClick={() => onNavigate(id)} aria-current={active === id ? "page" : undefined} className={cn("relative flex min-h-11 w-full items-center rounded-xl text-sm font-medium transition-colors duration-150", collapsed ? "justify-center px-0" : "gap-3 px-3", active === id ? "bg-sage text-primary before:absolute before:inset-y-2 before:left-0 before:w-1 before:rounded-full before:bg-accent" : "text-ink-muted hover:bg-sage-soft hover:text-ink")}>
                 <Icon className="size-5 shrink-0" aria-hidden="true" />{!collapsed && label}
@@ -92,7 +92,7 @@ export function Sidebar({ active, dashboard, collapsed, onToggle, onNavigate, on
         <button type="button" onClick={onToggle} title={collapsed ? "Expand sidebar" : "Collapse sidebar"} className={cn("flex min-h-11 w-full items-center rounded-xl text-sm font-medium text-ink-muted hover:bg-sage-soft hover:text-ink", collapsed ? "justify-center" : "gap-3 px-3")}>
           {collapsed ? <PanelLeftOpen className="size-5" /> : <><PanelLeftClose className="size-5" />Collapse sidebar</>}
         </button>
-        {!collapsed && <><button type="button" onClick={onOpenDisplay} className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 text-sm font-medium text-ink-muted transition-colors hover:bg-sage-soft hover:text-ink"><SlidersHorizontal className="size-5" aria-hidden="true" />Display settings</button><p className="flex items-start gap-2 rounded-xl bg-sage-soft p-3 text-xs leading-relaxed text-ink-muted"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden="true" />All accounts and amounts are fictional. No bank is connected.</p><AccountSummary dashboard={dashboard} /></>}
+        {!collapsed && <AccountSummary dashboard={dashboard} />}
       </div>
     </aside>
   );
@@ -144,13 +144,45 @@ export function MobileNavigation({ active, onNavigate }: { active: View; onNavig
 
 // ------------------------------------------------------------------ display controls
 
-export function ThemeToggle() {
-  const { resolvedTheme, setTheme } = usePreferences();
-  const dark = resolvedTheme === "dark";
+/** The header's gear: theme, display settings, and a shortcut to all settings. */
+export function SettingsMenu({ onOpenDisplay, onNavigate }: { onOpenDisplay: () => void; onNavigate: (view: View) => void }) {
+  const { theme, setTheme } = usePreferences();
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const menuId = useId();
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+  const item = "flex min-h-11 w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium text-ink hover:bg-sage-soft";
   return (
-    <button type="button" onClick={() => setTheme(dark ? "light" : "dark")} aria-label={dark ? "Switch to light mode" : "Switch to dark mode"} title={dark ? "Light mode" : "Dark mode"} className="grid size-10 place-items-center rounded-xl border border-line bg-surface text-ink-muted shadow-[var(--shadow-card)] transition-colors hover:text-ink">
-      {dark ? <Sun className="size-[1.1rem]" /> : <Moon className="size-[1.1rem]" />}
-    </button>
+    <div ref={root} className="relative" onKeyDown={(event) => { if (event.key === "Escape" && open) { event.preventDefault(); setOpen(false); } }}>
+      <button type="button" onClick={() => setOpen((value) => !value)} aria-haspopup="true" aria-expanded={open} aria-controls={open ? menuId : undefined} aria-label="Settings" title="Settings" className={cn("grid size-10 place-items-center rounded-xl border border-line bg-surface text-ink-muted shadow-[var(--shadow-card)] transition-colors hover:text-ink", open && "text-ink")}>
+        <Settings className={cn("size-[1.1rem] transition-transform duration-300 motion-reduce:transition-none", open && "rotate-45")} aria-hidden="true" />
+      </button>
+      {open && (
+        <div id={menuId} role="group" aria-label="Settings" className="absolute right-0 top-full z-40 mt-2 w-64 animate-enter rounded-2xl border border-line bg-surface p-2 shadow-[var(--shadow-raised)]">
+          <p className="px-2 pb-1.5 pt-1 text-xs font-semibold uppercase tracking-wider text-ink-subtle">Appearance</p>
+          <div role="radiogroup" aria-label="Theme" className="grid grid-cols-3 gap-1 rounded-xl bg-sage-soft p-1">
+            {THEME_OPTIONS.map((option) => {
+              const Icon = THEME_ICONS[option.value];
+              const selected = theme === option.value;
+              return (
+                <button key={option.value} type="button" role="radio" aria-checked={selected} onClick={() => setTheme(option.value)} className={cn("flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-lg text-xs font-semibold transition-colors", selected ? "bg-surface text-ink shadow-sm" : "text-ink-subtle hover:text-ink")}>
+                  <Icon className="size-4" aria-hidden="true" />{option.label}
+                </button>
+              );
+            })}
+          </div>
+          <div className="mt-2 border-t border-line pt-2">
+            <button type="button" className={item} onClick={() => { setOpen(false); onOpenDisplay(); }}><SlidersHorizontal className="size-4 text-ink-subtle" aria-hidden="true" />Display settings</button>
+            <button type="button" className={item} onClick={() => { setOpen(false); onNavigate("settings"); }}><Settings className="size-4 text-ink-subtle" aria-hidden="true" />All settings</button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -195,7 +227,7 @@ export function DisplaySettingsDialog({ open, onOpenChange }: { open: boolean; o
 
 // ------------------------------------------------------------------ header
 
-export function PageHeader({ view, dashboard, monthLoading, onChangePeriod, onAddTransaction, onOpenDisplay, onAsk }: { view: View; dashboard: Dashboard; monthLoading: boolean; onChangePeriod: (range: PeriodRange) => void; onAddTransaction: () => void; onOpenDisplay: () => void; onAsk: (question: string) => void }) {
+export function PageHeader({ view, dashboard, monthLoading, onChangePeriod, onAddTransaction, onOpenDisplay, onNavigate }: { view: View; dashboard: Dashboard; monthLoading: boolean; onChangePeriod: (range: PeriodRange) => void; onAddTransaction: () => void; onOpenDisplay: () => void; onNavigate: (view: View) => void }) {
   const item = NAVIGATION.find((entry) => entry.id === view) ?? NAVIGATION[0];
   const firstName = dashboard.profile.display_name.split(" ")[0];
   const { period } = dashboard;
@@ -223,23 +255,21 @@ export function PageHeader({ view, dashboard, monthLoading, onChangePeriod, onAd
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            {view === "today" && <AskBar onAsk={onAsk} className="hidden w-64 md:block 2xl:w-96" />}
-            <div className="hidden sm:block"><ThemeToggle /></div>
-            <button type="button" onClick={onOpenDisplay} aria-label="Display settings" className="grid size-10 place-items-center rounded-xl border border-line bg-surface text-ink-muted shadow-[var(--shadow-card)] hover:text-ink sm:hidden"><LayoutList className="size-[1.1rem]" /></button>
             {showAdd && (
               <Button onClick={onAddTransaction} className="shrink-0">
                 <Plus className="size-4" aria-hidden="true" /><span className="sm:hidden">Add</span><span className="hidden sm:inline">Add transaction</span>
               </Button>
             )}
+            <SettingsMenu onOpenDisplay={onOpenDisplay} onNavigate={onNavigate} />
           </div>
         </div>
         {showMonth ? (
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <PeriodPicker dashboard={dashboard} loading={monthLoading} onChange={onChangePeriod} />
-            <Badge tone="gold">Fictional data</Badge>
+            {dashboard.profile.is_fictional && <Badge tone="gold">Fictional data</Badge>}
           </div>
         ) : (
-          <p className="mt-1 text-xs text-ink-subtle sm:hidden">{formatMonth(dashboard.current_month)} · Fictional data</p>
+          <p className="mt-1 text-xs text-ink-subtle sm:hidden">{formatMonth(dashboard.current_month)}{dashboard.profile.is_fictional ? " · Fictional data" : ""}</p>
         )}
         {pastHome && <p className="mt-2 text-xs text-ink-subtle sm:hidden">Looking back at a past month. Balances and goals show today’s values.</p>}
       </div>

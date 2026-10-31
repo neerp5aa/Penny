@@ -22,14 +22,17 @@ class CurrentUserResponse(StrictModel):
 
 
 class DemoUser(StrictModel):
+    """The person the data belongs to: the fictional demo student, or a fresh account's owner."""
+
     id: str
     display_name: str
-    age: int = Field(ge=18)
-    school: str
-    city: str
-    province: str
+    age: int | None = Field(default=None, ge=18)
+    school: str | None = None
+    city: str | None = None
+    province: str | None = None
     currency: Literal["CAD"]
-    is_fictional: Literal[True]
+    # True for the seeded demo data set; False for a fresh account the user fills in.
+    is_fictional: bool
 
 
 class Account(StrictModel):

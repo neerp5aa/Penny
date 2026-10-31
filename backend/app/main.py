@@ -1,3 +1,7 @@
+import asyncio
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from datetime import date
 from typing import Annotated, Literal
 
@@ -44,27 +48,71 @@ from app.dashboard_models import (
     TransactionPatch,
     TransactionWrite,
 )
-from app.dashboard_store import dashboard_store
+from app.dashboard_store import DashboardStore, stores
 from app.domain.categorize import categorize, necessity
 from app.domain.finance import (
     COMMON_UTILIZATION_GUIDELINE_BASIS_POINTS,
     credit_utilization_basis_points,
     growth_projection,
 )
+from app.learning.models import (
+    AnswerResult,
+    AnswerWrite,
+    AttemptView,
+    LearnProfileWrite,
+    LearnState,
+    LessonDetail,
+)
 from app.models import CurrentUserResponse, HealthResponse
+from app.reminders.service import (
+    ReminderError,
+    ReminderService,
+    ReminderSettingsWrite,
+    ReminderState,
+    SentEmail,
+)
 
 settings = get_settings()
 AuthenticatedUser = Annotated[CurrentUser, Depends(get_current_user)]
 # Optional month (any day in it) whose snapshot a mutation should return; defaults to today.
 ViewMonth = Annotated[date | None, Query(description="Month to return, e.g. 2026-09-01")]
-app = FastAPI(title="Penny API", version="0.1.0", docs_url="/docs")
+reminders = ReminderService(stores.for_user)
+logger = logging.getLogger(__name__)
+
+
+async def _reminder_loop() -> None:
+    """Checks for due reminders on a fixed interval, for users who turned them on."""
+    while True:
+        await asyncio.sleep(get_settings().reminder_check_minutes * 60)
+        try:
+            await reminders.run_scheduled(get_settings())
+        except Exception:  # keep the loop alive; one bad pass shouldn't stop reminders
+            logger.exception("Scheduled reminder pass failed")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    task = asyncio.create_task(_reminder_loop()) if settings.reminder_check_minutes else None
+    yield
+    if task:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
+app = FastAPI(title="Penny API", version="0.1.0", docs_url="/docs", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[str(settings.frontend_origin).rstrip("/")],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+
+def _store(user: CurrentUser) -> DashboardStore:
+    """The signed-in user's data: the demo data set, or their own fresh account."""
+    return stores.for_user(user.id, user.email)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["system"])
@@ -79,7 +127,7 @@ def me(current_user: AuthenticatedUser) -> CurrentUserResponse:
         user_id=current_user.id,
         email=current_user.email,
         auth_method=current_user.auth_method,
-        has_demo_financial_data=dashboard_store.is_owner(current_user.id),
+        has_demo_financial_data=stores.is_demo(current_user.id),
     )
 
 
@@ -94,12 +142,12 @@ def dashboard(
     if (start is None) != (end is None):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Send both start and end")
     if start and end:
-        return dashboard_store.dashboard_for_range(current_user.id, start, end)
-    return dashboard_store.dashboard_for_user(current_user.id, month)
+        return _store(current_user).dashboard_for_range(current_user.id, start, end)
+    return _store(current_user).dashboard_for_user(current_user.id, month)
 
 
 def _in_view(result: DashboardResponse, user: CurrentUser, month: date | None) -> DashboardResponse:
-    return dashboard_store.dashboard_for_user(user.id, month) if month else result
+    return _store(user).dashboard_for_user(user.id, month) if month else result
 
 
 @app.post("/api/v1/transactions", response_model=DashboardResponse, tags=["transactions"])
@@ -107,7 +155,7 @@ def create_transaction(
     request: TransactionWrite, current_user: AuthenticatedUser, month: ViewMonth = None
 ) -> DashboardResponse:
     return _in_view(
-        dashboard_store.create_transaction(current_user.id, request), current_user, month
+        _store(current_user).create_transaction(current_user.id, request), current_user, month
     )
 
 
@@ -117,7 +165,7 @@ def create_split_transaction(
 ) -> DashboardResponse:
     """Record one purchase or deposit across several accounts (one transaction each)."""
     return _in_view(
-        dashboard_store.create_split_transaction(current_user.id, request), current_user, month
+        _store(current_user).create_split_transaction(current_user.id, request), current_user, month
     )
 
 
@@ -133,7 +181,7 @@ def update_transaction(
     month: ViewMonth = None,
 ) -> DashboardResponse:
     return _in_view(
-        dashboard_store.update_transaction(current_user.id, transaction_id, request),
+        _store(current_user).update_transaction(current_user.id, transaction_id, request),
         current_user,
         month,
     )
@@ -148,7 +196,9 @@ def delete_transaction(
     transaction_id: str, current_user: AuthenticatedUser, month: ViewMonth = None
 ) -> DashboardResponse:
     return _in_view(
-        dashboard_store.delete_transaction(current_user.id, transaction_id), current_user, month
+        _store(current_user).delete_transaction(current_user.id, transaction_id),
+        current_user,
+        month,
     )
 
 
@@ -156,7 +206,9 @@ def delete_transaction(
 def create_budget(
     request: BudgetWrite, current_user: AuthenticatedUser, month: ViewMonth = None
 ) -> DashboardResponse:
-    return _in_view(dashboard_store.create_budget(current_user.id, request), current_user, month)
+    return _in_view(
+        _store(current_user).create_budget(current_user.id, request), current_user, month
+    )
 
 
 @app.patch(
@@ -168,7 +220,7 @@ def update_budget(
     budget_id: str, request: BudgetPatch, current_user: AuthenticatedUser, month: ViewMonth = None
 ) -> DashboardResponse:
     return _in_view(
-        dashboard_store.update_budget(current_user.id, budget_id, request), current_user, month
+        _store(current_user).update_budget(current_user.id, budget_id, request), current_user, month
     )
 
 
@@ -180,14 +232,16 @@ def update_budget(
 def delete_budget(
     budget_id: str, current_user: AuthenticatedUser, month: ViewMonth = None
 ) -> DashboardResponse:
-    return _in_view(dashboard_store.delete_budget(current_user.id, budget_id), current_user, month)
+    return _in_view(
+        _store(current_user).delete_budget(current_user.id, budget_id), current_user, month
+    )
 
 
 @app.post("/api/v1/savings-goals", response_model=DashboardResponse, tags=["goals"])
 def create_goal(
     request: GoalWrite, current_user: AuthenticatedUser, month: ViewMonth = None
 ) -> DashboardResponse:
-    return _in_view(dashboard_store.create_goal(current_user.id, request), current_user, month)
+    return _in_view(_store(current_user).create_goal(current_user.id, request), current_user, month)
 
 
 @app.patch(
@@ -199,7 +253,7 @@ def update_goal(
     goal_id: str, request: GoalPatch, current_user: AuthenticatedUser, month: ViewMonth = None
 ) -> DashboardResponse:
     return _in_view(
-        dashboard_store.update_goal(current_user.id, goal_id, request), current_user, month
+        _store(current_user).update_goal(current_user.id, goal_id, request), current_user, month
     )
 
 
@@ -211,13 +265,13 @@ def update_goal(
 def delete_goal(
     goal_id: str, current_user: AuthenticatedUser, month: ViewMonth = None
 ) -> DashboardResponse:
-    return _in_view(dashboard_store.delete_goal(current_user.id, goal_id), current_user, month)
+    return _in_view(_store(current_user).delete_goal(current_user.id, goal_id), current_user, month)
 
 
 @app.post("/api/v1/budgets/copy", response_model=DashboardResponse, tags=["budgets"])
 def copy_budgets(request: BudgetCopyRequest, current_user: AuthenticatedUser) -> DashboardResponse:
     """Copy category limits from one month into another, skipping categories already budgeted."""
-    return dashboard_store.copy_budgets(current_user.id, request.from_month, request.to_month)
+    return _store(current_user).copy_budgets(current_user.id, request.from_month, request.to_month)
 
 
 @app.post(
@@ -232,7 +286,7 @@ def contribute_to_goal(
     month: ViewMonth = None,
 ) -> DashboardResponse:
     return _in_view(
-        dashboard_store.contribute_to_goal(
+        _store(current_user).contribute_to_goal(
             current_user.id, goal_id, request.amount_cents, request.from_account_id
         ),
         current_user,
@@ -249,7 +303,7 @@ def complete_mission(
     mission_id: str, current_user: AuthenticatedUser, month: ViewMonth = None
 ) -> DashboardResponse:
     return _in_view(
-        dashboard_store.complete_mission(current_user.id, mission_id), current_user, month
+        _store(current_user).complete_mission(current_user.id, mission_id), current_user, month
     )
 
 
@@ -257,7 +311,7 @@ def complete_mission(
 def create_bill(
     request: BillWrite, current_user: AuthenticatedUser, month: ViewMonth = None
 ) -> DashboardResponse:
-    return _in_view(dashboard_store.create_bill(current_user.id, request), current_user, month)
+    return _in_view(_store(current_user).create_bill(current_user.id, request), current_user, month)
 
 
 @app.patch("/api/v1/bills/{bill_id}", response_model=DashboardResponse, tags=["bills"])
@@ -265,7 +319,7 @@ def update_bill(
     bill_id: str, request: BillPatch, current_user: AuthenticatedUser, month: ViewMonth = None
 ) -> DashboardResponse:
     return _in_view(
-        dashboard_store.update_bill(current_user.id, bill_id, request), current_user, month
+        _store(current_user).update_bill(current_user.id, bill_id, request), current_user, month
     )
 
 
@@ -273,13 +327,13 @@ def update_bill(
 def delete_bill(
     bill_id: str, current_user: AuthenticatedUser, month: ViewMonth = None
 ) -> DashboardResponse:
-    return _in_view(dashboard_store.delete_bill(current_user.id, bill_id), current_user, month)
+    return _in_view(_store(current_user).delete_bill(current_user.id, bill_id), current_user, month)
 
 
 @app.get("/api/v1/bills/{bill_id}/history", response_model=BillHistory, tags=["bills"])
 def bill_history(bill_id: str, current_user: AuthenticatedUser) -> BillHistory:
     """Every recorded payment of a bill, newest first, with totals."""
-    return dashboard_store.bill_history(current_user.id, bill_id)
+    return _store(current_user).bill_history(current_user.id, bill_id)
 
 
 @app.post("/api/v1/bills/{bill_id}/mark-paid", response_model=DashboardResponse, tags=["bills"])
@@ -287,52 +341,56 @@ def mark_bill_paid(
     bill_id: str, current_user: AuthenticatedUser, month: ViewMonth = None
 ) -> DashboardResponse:
     """Record this payment as a transaction and move the bill to its next due date."""
-    return _in_view(dashboard_store.mark_bill_paid(current_user.id, bill_id), current_user, month)
+    return _in_view(
+        _store(current_user).mark_bill_paid(current_user.id, bill_id), current_user, month
+    )
 
 
 @app.put("/api/v1/pay-schedule", response_model=DashboardResponse, tags=["pay cycle"])
 def set_pay_schedule(request: PaySchedule, current_user: AuthenticatedUser) -> DashboardResponse:
-    return dashboard_store.set_pay_schedule(current_user.id, request)
+    return _store(current_user).set_pay_schedule(current_user.id, request)
 
 
 @app.post("/api/v1/categories", response_model=DashboardResponse, tags=["categories"])
 def create_category(request: CategoryWrite, current_user: AuthenticatedUser) -> DashboardResponse:
-    return dashboard_store.create_category(current_user.id, request)
+    return _store(current_user).create_category(current_user.id, request)
 
 
 @app.delete(
     "/api/v1/categories/{category_id}", response_model=DashboardResponse, tags=["categories"]
 )
 def delete_category(category_id: str, current_user: AuthenticatedUser) -> DashboardResponse:
-    return dashboard_store.delete_category(current_user.id, category_id)
+    return _store(current_user).delete_category(current_user.id, category_id)
 
 
 @app.post("/api/v1/accounts", response_model=DashboardResponse, tags=["accounts"])
 def create_account(request: AccountWrite, current_user: AuthenticatedUser) -> DashboardResponse:
-    return dashboard_store.create_account(current_user.id, request)
+    return _store(current_user).create_account(current_user.id, request)
 
 
 @app.patch("/api/v1/accounts/{account_id}", response_model=DashboardResponse, tags=["accounts"])
 def rename_account(
     account_id: str, request: AccountPatch, current_user: AuthenticatedUser
 ) -> DashboardResponse:
-    return dashboard_store.rename_account(current_user.id, account_id, request.name)
+    return _store(current_user).rename_account(current_user.id, account_id, request.name)
 
 
 @app.delete("/api/v1/accounts/{account_id}", response_model=DashboardResponse, tags=["accounts"])
 def delete_account(account_id: str, current_user: AuthenticatedUser) -> DashboardResponse:
-    return dashboard_store.delete_account(current_user.id, account_id)
+    return _store(current_user).delete_account(current_user.id, account_id)
 
 
 @app.post("/api/v1/transactions/import", response_model=ImportResult, tags=["transactions"])
 def import_transactions(request: ImportRequest, current_user: AuthenticatedUser) -> ImportResult:
     """Add history from a CSV export. Imported rows don't change current account balances."""
-    imported, errors = dashboard_store.import_csv(current_user.id, request.csv, request.account_id)
+    imported, errors = _store(current_user).import_csv(
+        current_user.id, request.csv, request.account_id
+    )
     return ImportResult(
         imported=imported,
         skipped=len(errors),
         errors=errors[:20],
-        dashboard=dashboard_store.dashboard_for_user(current_user.id),
+        dashboard=_store(current_user).dashboard_for_user(current_user.id),
     )
 
 
@@ -343,7 +401,7 @@ def history(
     end: Annotated[date, Query(description="Last month in the range")],
 ) -> HistoryResponse:
     """Monthly totals and category spending for a range of up to 24 months."""
-    return dashboard_store.history_for_user(current_user.id, start, end)
+    return _store(current_user).history_for_user(current_user.id, start, end)
 
 
 @app.post(
@@ -371,8 +429,8 @@ async def suggest_category(
     kind: Annotated[Literal["income", "spending"], Query()] = "spending",
 ) -> CategorySuggestion:
     """Keyword rules first; when they don't recognise the merchant, the model picks a category."""
-    dashboard_store.require_owner(current_user.id)
-    categories = dashboard_store.dashboard_for_user(current_user.id).categories
+    _store(current_user).require_owner(current_user.id)
+    categories = _store(current_user).dashboard_for_user(current_user.id).categories
     result = categorize(description, kind)
     category_id, source = result.category_id, "rules" if result.category_id else None
     if category_id is None:
@@ -393,10 +451,10 @@ async def parse_transaction(
     request: QuickAddRequest, current_user: AuthenticatedUser
 ) -> ParsedTransaction:
     """Turn a one-line note into transaction fields. Nothing is saved; the user confirms."""
-    dashboard_store.require_owner(current_user.id)
-    categories = dashboard_store.dashboard_for_user(current_user.id).categories
+    _store(current_user).require_owner(current_user.id)
+    categories = _store(current_user).dashboard_for_user(current_user.id).categories
     return await assist.parse_transaction(
-        get_settings(), request.text.strip(), dashboard_store.today(), categories
+        get_settings(), request.text.strip(), _store(current_user).today(), categories
     )
 
 
@@ -411,9 +469,9 @@ async def spending_take(
     if (start is None) != (end is None):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Send both start and end")
     view = (
-        dashboard_store.dashboard_for_range(current_user.id, start, end)
+        _store(current_user).dashboard_for_range(current_user.id, start, end)
         if start and end
-        else dashboard_store.dashboard_for_user(current_user.id, month)
+        else _store(current_user).dashboard_for_user(current_user.id, month)
     )
     return await assist.spending_take(get_settings(), view)
 
@@ -421,28 +479,91 @@ async def spending_take(
 @app.get("/api/v1/assist/budget-suggestions", response_model=BudgetSuggestions, tags=["assist"])
 async def budget_suggestions(current_user: AuthenticatedUser) -> BudgetSuggestions:
     """Suggested limits from recent spending. Applying any of them is a separate user action."""
-    dashboard_store.require_owner(current_user.id)
-    return await assist.budget_suggestions(get_settings(), dashboard_store, current_user.id)
+    _store(current_user).require_owner(current_user.id)
+    return await assist.budget_suggestions(get_settings(), _store(current_user), current_user.id)
 
 
 @app.get("/api/v1/assist/lesson-example/{lesson_id}", response_model=AssistText, tags=["assist"])
 async def lesson_example(lesson_id: str, current_user: AuthenticatedUser) -> AssistText:
     """Connect a lesson to the user's own fictional numbers."""
-    dashboard_store.require_owner(current_user.id)
+    _store(current_user).require_owner(current_user.id)
     result = await assist.lesson_example(
-        get_settings(), dashboard_store, current_user.id, lesson_id
+        get_settings(), _store(current_user), current_user.id, lesson_id
     )
     if result is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Lesson not found")
     return result
 
 
+@app.get("/api/v1/learn", response_model=LearnState, tags=["learning"])
+def learn_state(current_user: AuthenticatedUser) -> LearnState:
+    """The learning game: profile, topic paths with locks and stars, XP, streak, and badges."""
+    return _store(current_user).learn_state(current_user.id)
+
+
+@app.put("/api/v1/learn/profile", response_model=LearnState, tags=["learning"])
+def set_learn_profile(request: LearnProfileWrite, current_user: AuthenticatedUser) -> LearnState:
+    """Country (Canada or the US), chosen topics, and starting level. Progress is kept."""
+    return _store(current_user).set_learn_profile(current_user.id, request)
+
+
+@app.get("/api/v1/learn/lessons/{lesson_id}", response_model=LessonDetail, tags=["learning"])
+def lesson_detail(lesson_id: str, current_user: AuthenticatedUser) -> LessonDetail:
+    """A lesson's reading cards. Locked lessons return 409."""
+    return _store(current_user).lesson_detail(current_user.id, lesson_id)
+
+
 @app.post(
-    "/api/v1/lessons/{lesson_id}/complete", response_model=DashboardResponse, tags=["learning"]
+    "/api/v1/learn/lessons/{lesson_id}/attempts", response_model=AttemptView, tags=["learning"]
 )
-def complete_lesson(lesson_id: str, current_user: AuthenticatedUser) -> DashboardResponse:
-    """Record a passed lesson quiz. Idempotent, so XP is awarded once."""
-    return dashboard_store.complete_lesson(current_user.id, lesson_id)
+def start_attempt(lesson_id: str, current_user: AuthenticatedUser) -> AttemptView:
+    """Start a challenge: questions without answers, options shuffled, hearts full."""
+    return _store(current_user).start_attempt(current_user.id, lesson_id)
+
+
+@app.post(
+    "/api/v1/learn/attempts/{attempt_id}/answers", response_model=AnswerResult, tags=["learning"]
+)
+def answer_question(
+    attempt_id: str, request: AnswerWrite, current_user: AuthenticatedUser
+) -> AnswerResult:
+    """Grade one answer, once. XP is awarded only when the attempt is passed."""
+    return _store(current_user).answer_question(current_user.id, attempt_id, request)
+
+
+@app.get("/api/v1/reminders", response_model=ReminderState, tags=["reminders"])
+def reminder_state(current_user: AuthenticatedUser) -> ReminderState:
+    """Email reminder settings, what's due today, delivery mode, and recent emails."""
+    return reminders.state(get_settings(), current_user.id, current_user.email)
+
+
+@app.put("/api/v1/reminders", response_model=ReminderState, tags=["reminders"])
+def update_reminders(
+    request: ReminderSettingsWrite, current_user: AuthenticatedUser
+) -> ReminderState:
+    """Turn email reminders on or off, choose the address, and pick which reminders to get."""
+    try:
+        return reminders.update(get_settings(), current_user.id, request, current_user.email)
+    except ReminderError as error:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
+
+
+@app.post("/api/v1/reminders/test", response_model=SentEmail, tags=["reminders"])
+async def send_test_reminder(current_user: AuthenticatedUser) -> SentEmail:
+    """Send one test email (rate limited) so the user can check delivery."""
+    try:
+        return await reminders.send_test(get_settings(), current_user.id)
+    except ReminderError as error:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(error)) from error
+
+
+@app.post("/api/v1/reminders/send-now", response_model=SentEmail, tags=["reminders"])
+async def send_reminders_now(current_user: AuthenticatedUser) -> SentEmail:
+    """Email everything that's due right now (rate limited)."""
+    try:
+        return await reminders.send_now(get_settings(), current_user.id)
+    except ReminderError as error:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(error)) from error
 
 
 @app.post("/api/v1/calculations/growth", response_model=GrowthResponse, tags=["calculations"])
@@ -463,20 +584,20 @@ def calculate_growth(request: GrowthRequest) -> GrowthResponse:
     )
 
 
-def _coach() -> Coach:
-    return Coach(dashboard_store, get_settings())
+def _coach(user: CurrentUser) -> Coach:
+    return Coach(_store(user), get_settings())
 
 
 @app.get("/api/v1/coach/brief", response_model=BriefResponse, tags=["coach"])
 def coach_brief(current_user: AuthenticatedUser) -> BriefResponse:
     """Deterministic check-in signals for the current month; no model call."""
-    return _coach().brief(current_user.id)
+    return _coach(current_user).brief(current_user.id)
 
 
 @app.post("/api/v1/coach/chat", response_model=ChatResponse, tags=["coach"])
 async def coach_chat(request: ChatRequest, current_user: AuthenticatedUser) -> ChatResponse:
     """Answer the latest question using the user's verified data and deterministic tools."""
-    return await _coach().chat(request, current_user.id)
+    return await _coach(current_user).chat(request, current_user.id)
 
 
 @app.post(
@@ -488,4 +609,4 @@ def approve_coach_proposal(
     proposal_id: str, request: ApprovalRequest, current_user: AuthenticatedUser
 ) -> ApprovalResponse:
     """Apply a change Penny proposed, only after the user explicitly approves it."""
-    return _coach().approve(current_user.id, proposal_id, request.version)
+    return _coach(current_user).approve(current_user.id, proposal_id, request.version)

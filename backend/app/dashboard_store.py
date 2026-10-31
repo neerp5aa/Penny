@@ -1,4 +1,5 @@
 import calendar
+import re
 from collections.abc import Iterable
 from dataclasses import asdict
 from datetime import date, timedelta
@@ -10,8 +11,8 @@ from fastapi import HTTPException, status
 
 from app.config import get_settings
 from app.dashboard_features import (
-    LESSON_XP,
     bill_due_dates,
+    build_accounts_overview,
     build_calendar,
     build_foundations,
     build_learning,
@@ -91,7 +92,19 @@ from app.domain.periods import describe_period, month_end, months_between
 from app.domain.recurring import detect_fixed_series, series_key
 from app.fixtures import build_demo_dashboard
 from app.history_fixtures import build_history_budgets, build_history_transactions
-from app.models import Account, Transaction
+from app.learning.content import LESSONS_BY_ID, TOPICS, LessonContent
+from app.learning.engine import AnswerError, Learner, LessonResult, xp_for
+from app.learning.models import (
+    AnswerResult,
+    AnswerWrite,
+    AttemptResult,
+    AttemptView,
+    LearnProfile,
+    LearnProfileWrite,
+    LearnState,
+    LessonDetail,
+)
+from app.models import Account, DemoUser, Transaction
 
 MAX_HISTORY_MONTHS = 24
 UNUSUAL_MULTIPLE = 3
@@ -171,13 +184,58 @@ def _starter_categories() -> list[Category]:
 # fmt: on
 
 
+def _starter_missions() -> list[Mission]:
+    return [
+        Mission(
+            id="mission-review",
+            title="Review three recent purchases",
+            description="Check their categories and make sure each one supports your plan.",
+            xp_reward=40,
+            completed=False,
+        ),
+        Mission(
+            id="mission-save",
+            title="Protect your next $15",
+            description="Move a fictional $15 toward your emergency fund this week.",
+            xp_reward=60,
+            completed=False,
+        ),
+        Mission(
+            id="mission-budget",
+            title="Give every spending category a limit",
+            description="Check that each category you spend in has a monthly budget.",
+            xp_reward=50,
+            completed=False,
+        ),
+        Mission(
+            id="mission-credit",
+            title="Learn your credit utilization",
+            description="Open Credit basics and see how your fictional card balance compares.",
+            xp_reward=30,
+            completed=False,
+        ),
+        Mission(
+            id="mission-council",
+            title="Ask before a big purchase",
+            description="Ask Penny AI about something you are thinking of buying.",
+            xp_reward=50,
+            completed=False,
+        ),
+    ]
+
+
 class DashboardStore:
     """Thread-safe fictional store for the hackathon MVP."""
 
     # The demo's "today". Past months come from the fictional history fixture.
     active_month = date(2026, 10, 1)
 
-    def __init__(self, owner_user_ids: Iterable[str] = ()) -> None:
+    def __init__(
+        self, owner_user_ids: Iterable[str] = (), *, fresh_owner: DemoUser | None = None
+    ) -> None:
+        if fresh_owner is not None:
+            self._start_empty(fresh_owner)
+            return
         fixture = build_demo_dashboard()
         self._profile = fixture.profile
         # The fictional data set is owned by the demo identity plus any explicitly configured
@@ -232,45 +290,14 @@ class DashboardStore:
                 "current_cents": 30_000,
                 "target_date": date(2027, 1, 31),
                 "status": "active",
-                "account_id": "acct-savings",
+                "account_id": "acct-chequing",
             },
         }
+        self._missions = _starter_missions()
+        # The demo opens with one challenge already done.
         self._missions = [
-            Mission(
-                id="mission-review",
-                title="Review three recent purchases",
-                description="Check their categories and make sure each one supports your plan.",
-                xp_reward=40,
-                completed=False,
-            ),
-            Mission(
-                id="mission-save",
-                title="Protect your next $15",
-                description="Move a fictional $15 toward your emergency fund this week.",
-                xp_reward=60,
-                completed=True,
-            ),
-            Mission(
-                id="mission-budget",
-                title="Give every spending category a limit",
-                description="Check that each category you spend in has a monthly budget.",
-                xp_reward=50,
-                completed=False,
-            ),
-            Mission(
-                id="mission-credit",
-                title="Learn your credit utilization",
-                description="Open Credit basics and see how your fictional card balance compares.",
-                xp_reward=30,
-                completed=False,
-            ),
-            Mission(
-                id="mission-council",
-                title="Ask before a big purchase",
-                description="Ask Penny AI about something you are thinking of buying.",
-                xp_reward=50,
-                completed=False,
-            ),
+            m.model_copy(update={"completed": True}) if m.id == "mission-save" else m
+            for m in self._missions
         ]
         self._bills = {
             bill.id: bill
@@ -344,11 +371,39 @@ class DashboardStore:
             next_payday=date(2026, 11, 25),
         )
         self._contributions: list[GoalContribution] = []
-        # Fictional learning history so the demo opens with a streak in progress.
-        self._lessons_completed: dict[str, date] = {
-            "budget-basics": self.today() - timedelta(days=2),
-            "needs-vs-wants": self.today() - timedelta(days=1),
+        # Fictional learning history so the demo opens with a streak in progress. The learner
+        # still chooses a country and topics the first time they open Learn.
+        self._learner = Learner()
+        for days_ago, lesson_id, stars in ((2, "budgeting-easy", 3), (1, "saving-easy", 2)):
+            passed_on = self.today() - timedelta(days=days_ago)
+            self._learner.results[lesson_id] = LessonResult(
+                stars=stars,
+                xp_earned=xp_for(LESSONS_BY_ID[lesson_id].tier, stars),
+                first_passed=passed_on,
+            )
+            self._learner.activity_days.add(passed_on)
+        self._lock = RLock()
+
+    def _start_empty(self, owner: DemoUser) -> None:
+        """A fresh account: no transactions, budgets, goals, or bills, and one $0 chequing
+        account so money can be recorded straight away. Categories are the usual starters."""
+        self.active_month = month_start(date.today())
+        self._profile = owner
+        self._owner_user_ids = frozenset({owner.id})
+        self._accounts = {
+            "acct-chequing": Account(
+                id="acct-chequing", name="Chequing", account_type="chequing", balance_cents=0
+            )
         }
+        self._categories = {item.id: item for item in _starter_categories()}
+        self._transactions = {}
+        self._budgets = {}
+        self._goals = {}
+        self._missions = _starter_missions()
+        self._bills = {}
+        self._pay_schedule = None
+        self._contributions = []
+        self._learner = Learner()
         self._lock = RLock()
 
     def _financial_health(
@@ -645,6 +700,9 @@ class DashboardStore:
         budget = flexible_budget_cents(
             sum(item["limit_cents"] for item in self._monthly_budgets(month)), fixed
         )
+        if budget <= 0:
+            # No flexible budget means nothing to pace against; an empty month isn't "green".
+            return []
         days = calendar.monthrange(month.year, month.month)[1]
         through = self.today().day if month == self.active_month else days
         return score_month(month, transactions, fixed, budget, through)
@@ -674,14 +732,84 @@ class DashboardStore:
             due_by_day=due,
         )
 
-    def complete_lesson(self, user_id: str, lesson_id: str) -> DashboardResponse:
+    # ------------------------------------------------------------------ learning game
+
+    def _mission_xp(self) -> int:
+        return sum(item.xp_reward for item in self._missions if item.completed)
+
+    def learn_state(self, user_id: str) -> LearnState:
         with self._lock:
             self.require_owner(user_id)
-            if lesson_id not in LESSON_XP:
-                raise HTTPException(status.HTTP_404_NOT_FOUND, "Lesson not found")
-            # Idempotent: completing twice never awards XP twice.
-            self._lessons_completed.setdefault(lesson_id, self.today())
-            return self._snapshot()
+            return self._learner.state(self._mission_xp(), self.today())
+
+    def set_learn_profile(self, user_id: str, request: LearnProfileWrite) -> LearnState:
+        with self._lock:
+            self.require_owner(user_id)
+            topics = [topic for topic, _, _ in TOPICS if topic in set(request.topics)]
+            self._learner.set_profile(
+                LearnProfile(country=request.country, topics=topics, start_tier=request.start_tier)
+            )
+            return self._learner.state(self._mission_xp(), self.today())
+
+    def _open_lesson(self, lesson_id: str) -> LessonContent:
+        lesson = LESSONS_BY_ID.get(lesson_id)
+        if lesson is None or lesson.country not in (None, self._learner.country):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Lesson not found")
+        if not self._learner.is_unlocked(lesson):
+            raise HTTPException(status.HTTP_409_CONFLICT, "Pass the previous level to unlock this")
+        return lesson
+
+    def lesson_detail(self, user_id: str, lesson_id: str) -> LessonDetail:
+        with self._lock:
+            self.require_owner(user_id)
+            return self._learner.detail(self._open_lesson(lesson_id))
+
+    def start_attempt(self, user_id: str, lesson_id: str) -> AttemptView:
+        with self._lock:
+            self.require_owner(user_id)
+            return self._learner.start(self._open_lesson(lesson_id))
+
+    def answer_question(self, user_id: str, attempt_id: str, request: AnswerWrite) -> AnswerResult:
+        with self._lock:
+            self.require_owner(user_id)
+            attempt = self._learner.attempts.get(attempt_id)
+            if attempt is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Attempt not found")
+            today = self.today()
+            before = self._learner.state(self._mission_xp(), today)
+            try:
+                question, correct = self._learner.answer(attempt, request)
+            except AnswerError as error:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
+            result = None
+            if attempt.status != "active":
+                stars, awarded = (
+                    self._learner.record_pass(attempt, today)
+                    if attempt.status == "passed"
+                    else (0, 0)
+                )
+                after = self._learner.state(self._mission_xp(), today)
+                had = {badge.id for badge in before.badges if badge.earned}
+                result = AttemptResult(
+                    passed=attempt.status == "passed",
+                    stars=stars,
+                    mistakes=attempt.mistakes,
+                    xp_awarded=awarded,
+                    level_before=before.level,
+                    level_after=after.level,
+                    new_badges=[b for b in after.badges if b.earned and b.id not in had],
+                )
+                del self._learner.attempts[attempt.id]
+            return AnswerResult(
+                correct=correct,
+                explanation=question.explanation,
+                correct_choices=list(question.answer),
+                correct_value=question.number,
+                hearts_left=attempt.hearts_left,
+                status=attempt.status,
+                result=result,
+                dashboard=self._snapshot() if result else None,
+            )
 
     def _monthly_transactions(self, month: date) -> list[Transaction]:
         return [
@@ -810,8 +938,7 @@ class DashboardStore:
             )
             recurring = self._recurring()
             calendar_view = self._money_calendar(month, recurring.items)
-            mission_xp = sum(item.xp_reward for item in self._missions if item.completed)
-            learning = build_learning(self._lessons_completed, mission_xp, self.today())
+            learning = build_learning(self._learner, self._mission_xp(), self.today())
             return DashboardResponse(
                 active_month=month,
                 period=self._period(month, month_end(month)),
@@ -871,6 +998,13 @@ class DashboardStore:
                     investments_cents=None,
                     liabilities_cents=liabilities,
                     net_worth_cents=asset_balance - liabilities,
+                ),
+                accounts_overview=build_accounts_overview(
+                    list(self._accounts.values()),
+                    goals,
+                    self._transactions.values(),
+                    self.active_month,
+                    self.today(),
                 ),
                 previous_month_cash_flow_cents=previous_cash_flow,
                 spending_power_cents=max(
@@ -1428,6 +1562,15 @@ class DashboardStore:
     def is_owner(self, user_id: str) -> bool:
         return user_id in self._owner_user_ids
 
+    def profile_name(self, user_id: str) -> str:
+        """First name for greetings (the fictional profile's)."""
+        self.require_owner(user_id)
+        return self._profile.display_name.split()[0]
+
+    def has_fictional_data(self, user_id: str) -> bool:
+        self.require_owner(user_id)
+        return self._profile.is_fictional
+
     def require_owner(self, user_id: str) -> None:
         if not self.is_owner(user_id):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Financial context is not available")
@@ -1873,4 +2016,48 @@ def _configured_owner_ids() -> tuple[str, ...]:
     return (owner,) if owner else ()
 
 
+MAX_FRESH_ACCOUNTS = 200
+
+
+def _name_from_email(email: str | None) -> str:
+    """ "maya.singh@x.com" -> "Maya". Falls back to "there" (as in "Good morning, there")."""
+    local = (email or "").split("@")[0]
+    word = next((part for part in re.split(r"[._+\-\d]+", local) if part.isalpha()), "")
+    return word[:30].capitalize() or "there"
+
+
+class StoreRegistry:
+    """Who sees which data: the demo identity (and the configured owner) get the fictional
+    Maya data set; every other signed-in user gets their own empty account, made on first use.
+    Everything is in memory, so fresh accounts reset when the server restarts."""
+
+    def __init__(self, demo: DashboardStore) -> None:
+        self.demo = demo
+        self._fresh: dict[str, DashboardStore] = {}
+        self._lock = RLock()
+
+    def for_user(self, user_id: str, email: str | None = None) -> DashboardStore:
+        if self.demo.is_owner(user_id):
+            return self.demo
+        with self._lock:
+            store = self._fresh.get(user_id)
+            if store is None:
+                if len(self._fresh) >= MAX_FRESH_ACCOUNTS:
+                    raise HTTPException(
+                        status.HTTP_503_SERVICE_UNAVAILABLE, "Penny can’t open new accounts now"
+                    )
+                owner = DemoUser(
+                    id=user_id,
+                    display_name=_name_from_email(email),
+                    currency="CAD",
+                    is_fictional=False,
+                )
+                store = self._fresh[user_id] = DashboardStore(fresh_owner=owner)
+            return store
+
+    def is_demo(self, user_id: str) -> bool:
+        return self.demo.is_owner(user_id)
+
+
 dashboard_store = DashboardStore(owner_user_ids=_configured_owner_ids())
+stores = StoreRegistry(dashboard_store)

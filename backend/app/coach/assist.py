@@ -17,11 +17,11 @@ from app.coach.context import build_snapshot, load_context
 from app.coach.facts import FactBook, parse_cad
 from app.coach.llm import ModelUnavailable, ask_json
 from app.config import Settings
-from app.dashboard_features import LESSONS
 from app.dashboard_models import Category, DashboardResponse
 from app.dashboard_store import DashboardStore
 from app.domain.categorize import categorize
 from app.domain.finance import ceil_div
+from app.learning.content import LESSONS_BY_ID
 
 logger = logging.getLogger(__name__)
 Source = Literal["ai", "built_in"]
@@ -496,6 +496,7 @@ _TRACK_FOCUS = {
     "tax": "where their income comes from (job pay and scholarships); no tax amounts or advice",
     "credit": "the credit card balance, limit, and utilization",
     "investing": "the typical monthly surplus and whether short-term goals come first",
+    "rules": "their accounts and balances; explain the protection or rule, no legal advice",
 }
 
 
@@ -503,10 +504,10 @@ async def lesson_example(
     settings: Settings, store: DashboardStore, user_id: str, lesson_id: str
 ) -> AssistText | None:
     """Two or three sentences connecting a lesson to the user's own numbers (None if unknown)."""
-    lesson = next((item for item in LESSONS if item[0] == lesson_id), None)
+    lesson = LESSONS_BY_ID.get(lesson_id)
     if not lesson:
         return None
-    _, track, title, _ = lesson
+    track, title = lesson.topic, lesson.title
     ctx = load_context(store, user_id)
     snapshot = build_snapshot(ctx)
     d, f = ctx.dashboard, ctx.facts
@@ -528,8 +529,13 @@ async def lesson_example(
             for g in d.savings_goals[:2]
         )
         or "Start with a small first goal, like an emergency cushion.",
-        "tax": "Your job pay shows up on a T4 slip each year, and scholarships and tuition have "
+        "tax": "Your job pay shows up on a W-2 each year, and freelance pay on a 1099. Knowing "
+        "which you get tells you whether tax was already withheld."
+        if lesson.country == "US"
+        else "Your job pay shows up on a T4 slip each year, and scholarships and tuition have "
         "their own slips. Filing even with a small income can unlock benefits.",
+        "rules": "Every account in Penny is fictional, but the same rules apply to real ones: "
+        "know your deposit insurance limit, and never share a PIN or passcode.",
         "credit": (
             f"Your card is at {utilization} of its limit, under the 30% many guides mention."
             if d.credit and d.credit.utilization_basis_points <= 3000

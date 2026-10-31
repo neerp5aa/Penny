@@ -1,6 +1,9 @@
 import { getSupabaseAccessToken } from "./supabase";
 
 export type AccountType = "chequing" | "savings" | "credit" | "cash" | "investment" | "other";
+export type AccountBalance = { id: string; name: string; account_type: AccountType; balance_cents: number; net_cents: number; credit_limit_cents: number | null; available_credit_cents: number | null; utilization_basis_points: number | null; goals: { id: string; name: string; current_cents: number }[]; goal_cents: number; free_cents: number | null; money_in_cents: number; money_out_cents: number; last_activity_on: string | null };
+/** Every account and how they add up, as of today (whatever period is on screen). */
+export type AccountsOverview = { accounts: AccountBalance[]; spending_cents: number; savings_cents: number; investments_cents: number; other_cents: number; assets_cents: number; owed_cents: number; net_worth_cents: number; goal_cents: number; goal_shortfall_cents: number };
 export type Account = { id: string; name: string; account_type: AccountType; balance_cents: number; credit_limit_cents: number | null };
 export type Category = { id: string; name: string; colour_token: string; kind: "income" | "spending"; parent_id: string | null; custom: boolean };
 export type Transaction = { id: string; description: string; category: string; account_id: string; category_id: string | null; amount_cents: number; kind: "income" | "spending"; occurred_on: string; necessity: "need" | "want" | null; auto_categorized: boolean; bill_id: string | null; paid_automatically: boolean | null; unusual: boolean };
@@ -33,8 +36,9 @@ export type RecurringExpense = { id: string; name: string; category_name: string
 export type RecurringSuggestion = { name: string; category_id: string | null; amount_cents: number; next_due: string };
 export type RecurringSummary = { items: RecurringExpense[]; suggestions: RecurringSuggestion[]; fixed_monthly_cents: number; subscriptions_monthly_cents: number; due_next_7_days_cents: number; due_before_payday_cents: number; share_of_income_basis_points: number | null; methodology: string };
 export type BillHistory = { bill: Bill; payments: Transaction[]; payment_count: number; total_paid_cents: number; paid_this_year_cents: number; average_cents: number; auto_paid_count: number };
-export type LessonTrack = "budgeting" | "saving" | "tax" | "credit" | "investing";
-export type Lesson = { id: string; track: LessonTrack; title: string; xp_reward: number; completed: boolean };
+export type LessonTrack = "budgeting" | "saving" | "tax" | "credit" | "rules" | "investing";
+export type LessonTier = "easy" | "medium" | "hard";
+export type Lesson = { id: string; track: LessonTrack; difficulty: LessonTier; title: string; xp_reward: number; completed: boolean };
 export type LearningProgress = { xp_total: number; level: number; level_xp: number; level_size_xp: number; streak_days: number; completed_today: boolean; week_activity: boolean[]; next_lesson: Lesson | null; lessons: Lesson[] };
 export type FoundationCheck = { id: string; title: string; status: "met" | "in_progress" | "not_met"; detail: string };
 /** The date range a dashboard covers. `phrase` reads after a verb: "spent $X this month". */
@@ -44,7 +48,7 @@ export type Dashboard = {
   period: Period;
   current_month: string;
   data_months: string[];
-  profile: { display_name: string; school: string; city: string; province: string; currency: "CAD"; is_fictional: true };
+  profile: { display_name: string; age: number | null; school: string | null; city: string | null; province: string | null; currency: "CAD"; is_fictional: boolean };
   accounts: Account[];
   categories: Category[];
   transactions: Transaction[];
@@ -64,6 +68,7 @@ export type Dashboard = {
   pay_schedule: PaySchedule | null;
   home: { available_cents: number; cash_cents: number; cash_history: MonthPoint[]; cash_change_basis_points: number | null; savings_cents: number; savings_history: MonthPoint[]; monthly_saved_cents: number; monthly_goal_cents: number; spending_change_basis_points: number | null; weekly_flexible_cents: number };
   net_worth: { cash_cents: number; savings_cents: number; investments_cents: number | null; liabilities_cents: number; net_worth_cents: number };
+  accounts_overview: AccountsOverview;
   previous_month_cash_flow_cents: number | null;
   spending_power_cents: number;
   totals: { available_balance_cents: number; income_cents: number; spending_cents: number; cash_flow_cents: number; total_budget_cents: number; budget_remaining_cents: number; savings_contributions_cents: number; savings_rate_basis_points: number };
@@ -189,7 +194,6 @@ export const dashboardApi = {
   renameAccount: (id: string, name: string) => request(`/api/v1/accounts/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
   deleteAccount: (id: string) => request(`/api/v1/accounts/${id}`, { method: "DELETE" }),
   importCsv: (csv: string, account_id: string) => authorizedRequest<{ imported: number; skipped: number; errors: string[]; dashboard: Dashboard }>("/api/v1/transactions/import", { method: "POST", body: JSON.stringify({ csv, account_id }) }),
-  completeLesson: (id: string) => request(`/api/v1/lessons/${id}/complete`, { method: "POST" }),
   suggestCategory: (description: string, kind: Transaction["kind"]) => authorizedRequest<CategorySuggestion>(`/api/v1/categorize?description=${encodeURIComponent(description)}&kind=${kind}`),
 };
 
@@ -205,6 +209,41 @@ export const assistApi = {
   spendingTake: (start: string, end: string) => authorizedRequest<AssistText>(`/api/v1/assist/spending-take?start=${start}&end=${end}`),
   budgetSuggestions: () => authorizedRequest<BudgetSuggestions>("/api/v1/assist/budget-suggestions"),
   lessonExample: (id: string) => authorizedRequest<AssistText>(`/api/v1/assist/lesson-example/${encodeURIComponent(id)}`),
+};
+
+export type LearnCountry = "CA" | "US";
+export type LearnProfile = { country: LearnCountry | null; topics: LessonTrack[]; start_tier: LessonTier };
+export type LessonCard = { id: string; topic: LessonTrack; tier: LessonTier; title: string; summary: string; locked: boolean; passed: boolean; stars: number; xp_earned: number; xp_max: number; hearts: number; question_count: number };
+export type TopicPath = { id: LessonTrack; label: string; blurb: string; selected: boolean; lessons: LessonCard[] };
+export type LearnBadge = { id: string; title: string; description: string; earned: boolean };
+export type LearnState = { profile: LearnProfile; xp_total: number; level: number; level_xp: number; level_size_xp: number; streak_days: number; completed_today: boolean; topics: TopicPath[]; badges: LearnBadge[] };
+export type LessonTaskView = "spending" | "goals" | "invest" | "ai" | "settings";
+export type LessonDetail = { card: LessonCard; cards: string[]; task: { label: string; view: LessonTaskView; prompt: string | null } | null };
+export type QuestionKind = "choice" | "multi" | "number" | "order";
+export type QuestionView = { id: string; kind: QuestionKind; prompt: string; options: { id: string; text: string }[]; unit: "$" | "%" | "years" | "" };
+export type AttemptView = { id: string; lesson_id: string; hearts_total: number; hearts_left: number; questions: QuestionView[] };
+export type AttemptResult = { passed: boolean; stars: number; mistakes: number; xp_awarded: number; level_before: number; level_after: number; new_badges: LearnBadge[] };
+export type AnswerResult = { correct: boolean; explanation: string; correct_choices: string[]; correct_value: string | null; hearts_left: number; status: "active" | "passed" | "failed"; result: AttemptResult | null; dashboard: Dashboard | null };
+
+/** The learning game. Grading, hearts, and XP live on the server; answers arrive only after answering. */
+export const learnApi = {
+  state: () => authorizedRequest<LearnState>("/api/v1/learn"),
+  setProfile: (body: { country: LearnCountry; topics: LessonTrack[]; start_tier: LessonTier }) => authorizedRequest<LearnState>("/api/v1/learn/profile", { method: "PUT", body: JSON.stringify(body) }),
+  lesson: (id: string) => authorizedRequest<LessonDetail>(`/api/v1/learn/lessons/${encodeURIComponent(id)}`),
+  start: (id: string) => authorizedRequest<AttemptView>(`/api/v1/learn/lessons/${encodeURIComponent(id)}/attempts`, { method: "POST" }),
+  answer: (attemptId: string, body: { question_id: string; choices?: string[]; value?: string }) => authorizedRequest<AnswerResult>(`/api/v1/learn/attempts/${encodeURIComponent(attemptId)}/answers`, { method: "POST", body: JSON.stringify(body) }),
+};
+
+export type ReminderKinds = { bills: boolean; budgets: boolean; streaks: boolean; lessons: boolean };
+export type SentEmail = { id: string; at: string; to: string; subject: string; text: string; status: "sent" | "preview" | "failed"; trigger: "scheduled" | "manual" | "test"; error: string | null };
+export type ReminderState = { enabled: boolean; email: string | null; kinds: ReminderKinds; delivery: "smtp" | "preview"; sender: string | null; check_minutes: number; due: { kind: keyof ReminderKinds; title: string; detail: string; already_sent: boolean }[]; log: SentEmail[]; emails_left_this_hour: number };
+
+/** Email reminders. Sending happens on the server; SMTP credentials never reach the browser. */
+export const remindersApi = {
+  state: () => authorizedRequest<ReminderState>("/api/v1/reminders"),
+  update: (body: { enabled: boolean; email: string | null; kinds: ReminderKinds }) => authorizedRequest<ReminderState>("/api/v1/reminders", { method: "PUT", body: JSON.stringify(body) }),
+  test: () => authorizedRequest<SentEmail>("/api/v1/reminders/test", { method: "POST" }),
+  sendNow: () => authorizedRequest<SentEmail>("/api/v1/reminders/send-now", { method: "POST" }),
 };
 
 export const historyApi = {

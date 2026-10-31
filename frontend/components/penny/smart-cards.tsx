@@ -159,7 +159,7 @@ function SuggestionsBody({ onApply }: { onApply: (month: string, picked: BudgetS
   );
 }
 
-/** "How this applies to you": a lesson tied back to the user's own fictional numbers. */
+/** "How this applies to you": a lesson tied back to the user's own numbers. */
 export function LessonExample({ lessonId }: { lessonId: string }) {
   const example = useAssist<AssistText>(lessonId, () => assistApi.lessonExample(lessonId));
   if (example.error) return null;
@@ -172,7 +172,7 @@ export function LessonExample({ lessonId }: { lessonId: string }) {
       {example.loading
         ? <div className="mt-2 space-y-2">{[92, 70].map((width) => <div key={width} className="h-4 animate-pulse rounded bg-surface/70" style={{ width: `${width}%` }} />)}</div>
         : <p className="mt-1.5 text-sm leading-relaxed text-ink-muted">{example.data?.items[0]}</p>}
-      <p className="mt-2 text-[11px] text-ink-subtle">Uses your fictional demo numbers. Educational, not advice.</p>
+      <p className="mt-2 text-[11px] text-ink-subtle">Uses your numbers in Penny. Educational, not advice.</p>
     </section>
   );
 }

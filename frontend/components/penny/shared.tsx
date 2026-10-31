@@ -1,21 +1,22 @@
 "use client";
 
 import { useId } from "react";
-import { Bot, GraduationCap, Home, ReceiptText, Settings, Target, TrendingUp, type LucideIcon } from "lucide-react";
+import { Bot, GraduationCap, Home, Landmark, ReceiptText, Settings, Target, TrendingUp, type LucideIcon } from "lucide-react";
 import { Label } from "@/components/ui/input";
 import { ApiError } from "@/lib/api";
 import { formatCad } from "@/lib/money";
 import { cn } from "@/lib/utils";
 
-export type View = "today" | "spending" | "recurring" | "goals" | "invest" | "learn" | "ai" | "settings";
+export type View = "today" | "spending" | "accounts" | "recurring" | "goals" | "invest" | "learn" | "ai" | "settings";
 
 /** `primary` items sit in the phone tab bar; the rest live under "More". */
 export const NAVIGATION: { id: View; label: string; title: string; description: string; icon: LucideIcon; primary: boolean }[] = [
-  { id: "today", label: "Today", title: "Today", description: "Your Money Score, streaks, and what’s coming up.", icon: Home, primary: true },
+  { id: "today", label: "Home", title: "Today", description: "Your Money Score, streaks, and what’s coming up.", icon: Home, primary: true },
   { id: "spending", label: "Spending", title: "Spending", description: "Transactions, recurring bills, and budgets.", icon: ReceiptText, primary: true },
+  { id: "accounts", label: "Accounts", title: "Accounts", description: "Every account’s balance, and what it all adds up to.", icon: Landmark, primary: false },
   { id: "goals", label: "Goals", title: "Goals", description: "Save on purpose and see what it takes each month.", icon: Target, primary: true },
   { id: "invest", label: "Invest", title: "Invest", description: "Learn how investing works in Canada, at your own pace.", icon: TrendingUp, primary: false },
-  { id: "learn", label: "Learn", title: "Learn", description: "Bite-sized lessons on budgeting, saving, tax, and credit.", icon: GraduationCap, primary: false },
+  { id: "learn", label: "Learn", title: "Learn", description: "Lessons and challenges for Canada or the US, from Easy to Hard.", icon: GraduationCap, primary: false },
   { id: "ai", label: "Penny AI", title: "Penny AI", description: "Your money coach. It knows your numbers and helps you decide.", icon: Bot, primary: true },
   { id: "settings", label: "Settings", title: "Settings", description: "Appearance, reminders, and how your data is protected.", icon: Settings, primary: false },
 ];

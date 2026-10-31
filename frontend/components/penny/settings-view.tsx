@@ -1,6 +1,6 @@
 "use client";
 
-import { type ChangeEvent, useEffect, useState } from "react";
+import { type ChangeEvent, useState } from "react";
 import { Banknote, Check, FileUp, Lock, ShieldCheck, Tags, Trash2, Wallet } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,20 +12,13 @@ import { cn } from "@/lib/utils";
 import { THEME_ICONS } from "./app-shell";
 import { ACCOUNT_TYPE_LABELS } from "./dialogs";
 import { THEME_OPTIONS, usePreferences } from "./preferences";
+import { EmailReminders } from "./email-reminders";
 import { cad, Field } from "./shared";
 
 /** Saves a change through the app's mutation runner; resolves to an error message or null. */
 export type SaveChange = (action: () => Promise<Dashboard>, success: string) => Promise<string | null>;
 
 const SECTION = "rounded-[var(--radius-card)] border border-line bg-surface p-5 shadow-[var(--shadow-card)] sm:p-6";
-
-const DEFAULT_NOTIFICATIONS = { bills: true, budgets: true, streaks: true, lessons: false };
-const NOTIFICATION_OPTIONS = [
-  ["bills", "Bill and subscription reminders", "Three days before anything recurring is due."],
-  ["budgets", "Budget alerts", "When a category passes 85% of its limit."],
-  ["streaks", "Streak nudges", "An evening reminder when your green streak is at risk."],
-  ["lessons", "Daily lesson", "A reminder to keep your learning streak going."],
-] as const;
 
 const PROTECTIONS_TODAY = [
   "Penny uses fictional data only. It never asks for your bank username or password.",
@@ -42,23 +35,8 @@ const BANK_CONNECTION_STANDARDS = [
   "Device sign-in with passkeys, Face ID, or fingerprint.",
 ];
 
-/** Saved notification choices, or the defaults when storage is blocked or invalid. */
-function savedNotifications(): typeof DEFAULT_NOTIFICATIONS {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem("penny-notifications") ?? "null") as Record<string, unknown> | null;
-    if (parsed && Object.keys(DEFAULT_NOTIFICATIONS).every((key) => typeof parsed[key] === "boolean")) return parsed as typeof DEFAULT_NOTIFICATIONS;
-  } catch { /* Fall through to defaults. */ }
-  return DEFAULT_NOTIFICATIONS;
-}
-
 function Preferences() {
-  // Rendered only on the client after the dashboard loads, so reading storage here is safe.
-  const [notifications, setNotifications] = useState(savedNotifications);
   const { theme, setTheme } = usePreferences();
-  useEffect(() => {
-    try { window.localStorage.setItem("penny-notifications", JSON.stringify(notifications)); } catch { /* Keep the in-memory choice. */ }
-  }, [notifications]);
-  const toggle = (key: keyof typeof notifications) => setNotifications((value) => ({ ...value, [key]: !value[key] }));
   const section = SECTION;
   return (
     <>
@@ -71,18 +49,7 @@ function Preferences() {
           })}
         </div>
       </section>
-      <section className={section}>
-        <h2 className="text-lg font-semibold text-ink">Reminders</h2>
-        <p className="mt-1 text-sm text-ink-subtle">Saved on this device. In this demo, reminders show inside Penny rather than as push notifications.</p>
-        <div className="mt-2 divide-y divide-line">
-          {NOTIFICATION_OPTIONS.map(([key, label, description]) => (
-            <label key={key} className="flex min-h-14 cursor-pointer items-center justify-between gap-4 py-3">
-              <span><span className="block text-sm font-semibold text-ink">{label}</span><span className="mt-0.5 block text-sm text-ink-subtle">{description}</span></span>
-              <input type="checkbox" checked={notifications[key]} onChange={() => toggle(key)} className="size-5 accent-[var(--color-accent)]" />
-            </label>
-          ))}
-        </div>
-      </section>
+      <EmailReminders />
       <section className={section} aria-labelledby="trust-title">
         <h2 id="trust-title" className="flex items-center gap-2 text-lg font-semibold text-ink"><ShieldCheck className="size-5 text-accent" aria-hidden="true" />Security and trust</h2>
         <h3 className="mt-4 text-sm font-semibold text-ink">How Penny protects you today</h3>

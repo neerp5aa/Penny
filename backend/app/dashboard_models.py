@@ -151,6 +151,47 @@ class NetWorthSnapshot(DashboardModel):
     net_worth_cents: int
 
 
+class AccountGoal(DashboardModel):
+    id: str
+    name: str
+    current_cents: int = Field(ge=0)
+
+
+class AccountBalance(DashboardModel):
+    id: str
+    name: str
+    account_type: Literal["chequing", "savings", "credit", "cash", "investment", "other"]
+    balance_cents: int = Field(ge=0)
+    # What the account adds to net worth: negative for a card balance owed.
+    net_cents: int
+    credit_limit_cents: int | None
+    available_credit_cents: int | None
+    utilization_basis_points: int | None
+    goals: list[AccountGoal]
+    # Goal money kept here (capped at the balance), and what's left over.
+    goal_cents: int = Field(ge=0)
+    free_cents: int | None
+    money_in_cents: int = Field(ge=0)
+    money_out_cents: int = Field(ge=0)
+    last_activity_on: date | None
+
+
+class AccountsOverview(DashboardModel):
+    """Every account and how they add up. Balances are as of today, whatever period is shown."""
+
+    accounts: list[AccountBalance]
+    spending_cents: int = Field(ge=0)  # chequing and cash
+    savings_cents: int = Field(ge=0)
+    investments_cents: int = Field(ge=0)
+    other_cents: int = Field(ge=0)
+    assets_cents: int = Field(ge=0)
+    owed_cents: int = Field(ge=0)
+    net_worth_cents: int
+    goal_cents: int = Field(ge=0)
+    # Goal money recorded against an account beyond what it actually holds (0 when consistent).
+    goal_shortfall_cents: int = Field(ge=0)
+
+
 class RecurringExpense(DashboardModel):
     id: str
     name: str
@@ -222,7 +263,8 @@ class MoneyCalendar(DashboardModel):
 
 class Lesson(DashboardModel):
     id: str
-    track: Literal["budgeting", "saving", "tax", "credit", "investing"]
+    track: Literal["budgeting", "saving", "tax", "credit", "rules", "investing"]
+    difficulty: Literal["easy", "medium", "hard"]
     title: str
     xp_reward: int = Field(gt=0)
     completed: bool
@@ -307,6 +349,7 @@ class DashboardResponse(DashboardModel):
     pay_schedule: PaySchedule | None
     home: HomeSummary
     net_worth: NetWorthSnapshot
+    accounts_overview: AccountsOverview
     previous_month_cash_flow_cents: int | None
     spending_power_cents: int = Field(ge=0)
     totals: DashboardTotals

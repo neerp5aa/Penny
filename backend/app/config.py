@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal, Self
 
-from pydantic import AnyHttpUrl, model_validator
+from pydantic import AnyHttpUrl, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,6 +25,17 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-6.1-sol"
     # Upper bound for one coach reply, including every tool round and any revision.
     coach_timeout_seconds: float = 45.0
+    # Email reminders over SMTP (Gmail app password, Resend, SendGrid, Postmark, ...). Without a
+    # host, Penny runs in preview mode: reminders are composed and shown in Settings, not sent.
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_security: Literal["starttls", "ssl", "none"] = "starttls"
+    smtp_username: str | None = None
+    smtp_password: SecretStr | None = None
+    # The From address, e.g. "Penny <reminders@example.com>". Defaults to the username.
+    smtp_from: str | None = None
+    # How often the server checks for due reminders; 0 turns the background check off.
+    reminder_check_minutes: int = Field(default=60, ge=0, le=1440)
 
     @model_validator(mode="after")
     def _reject_demo_token_outside_development(self) -> Self:

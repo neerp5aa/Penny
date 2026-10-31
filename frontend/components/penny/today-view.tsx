@@ -29,7 +29,6 @@ export function TodayView({ dashboard, onNavigate, onAsk }: Props) {
   const [scoreInfo, setScoreInfo] = useState(false);
   return (
     <div className="mx-auto max-w-7xl space-y-5">
-      <AskBar onAsk={onAsk} className="md:hidden" />
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_24rem] [&>*]:min-w-0">
         <div className="space-y-5">
           <MetricCards dashboard={dashboard} onNavigate={onNavigate} />
@@ -47,18 +46,6 @@ export function TodayView({ dashboard, onNavigate, onAsk }: Props) {
       </div>
       <ScoreDialog open={scoreInfo} onOpenChange={setScoreInfo} dashboard={dashboard} />
     </div>
-  );
-}
-
-/** "Ask Penny anything" search-style box. Opens Penny AI with the question. */
-export function AskBar({ onAsk, className }: { onAsk: (question: string) => void; className?: string }) {
-  const [text, setText] = useState("");
-  return (
-    <form role="search" className={cn("relative", className)} onSubmit={(event) => { event.preventDefault(); if (text.trim()) { onAsk(text.trim()); setText(""); } }}>
-      <label htmlFor="ask-penny-bar" className="sr-only">Ask Penny anything</label>
-      <Sparkles className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-accent" aria-hidden="true" />
-      <input id="ask-penny-bar" value={text} onChange={(event) => setText(event.target.value)} maxLength={600} placeholder="Ask Penny anything… (e.g. “Should I buy this?”)" className="min-h-12 w-full rounded-full border border-line bg-surface pl-11 pr-4 text-sm text-ink shadow-[var(--shadow-card)] placeholder:text-ink-subtle focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/15" />
-    </form>
   );
 }
 

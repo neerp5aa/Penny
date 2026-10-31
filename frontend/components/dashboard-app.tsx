@@ -8,6 +8,7 @@ import { DisplaySettingsDialog, MobileAccount, MobileNavigation, PageHeader, Sid
 import { SettingsView } from "@/components/penny/settings-view";
 import { CoachView, useCoachChat } from "@/components/penny/coach-view";
 import { AddMoneyDialog, BudgetDialog, ConfirmDialog, type ConfirmRequest, GoalDialog, type InlineCreate, TransactionDialog } from "@/components/penny/dialogs";
+import { AccountsView } from "@/components/penny/accounts-view";
 import { GoalsView } from "@/components/penny/goals-view";
 import { InvestView } from "@/components/penny/invest-view";
 import { LearnView } from "@/components/penny/learn-view";
@@ -19,7 +20,7 @@ import { usePreferences } from "@/components/penny/preferences";
 import { cad, describeError, NAVIGATION, type View } from "@/components/penny/shared";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { ToastProvider, useToast } from "@/components/ui/toast";
-import { type Bill, type Budget, type BudgetSuggestion, type Dashboard, dashboardApi, type Lesson, type Mission, type SavingsGoal, type Transaction } from "@/lib/api";
+import { type Bill, type Budget, type BudgetSuggestion, type Dashboard, dashboardApi, type Mission, type SavingsGoal, type Transaction } from "@/lib/api";
 import { addMonths, formatMonth } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -322,25 +323,20 @@ function PennyApp() {
     navigate("ai");
     void coachChat.send(question);
   };
-  const completeLesson = async (lesson: Lesson) => {
-    const error = await mutate(() => dashboardApi.completeLesson(lesson.id), `Lesson complete · +${lesson.xp_reward} XP`);
-    if (error) toast({ title: "Couldn’t save your progress", description: error, tone: "error" });
-    return error === null;
-  };
-
   return (
     <div className="min-h-dvh">
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[70] focus:rounded-xl focus:bg-surface focus:px-4 focus:py-3 focus:font-semibold focus:shadow-[var(--shadow-raised)]">Skip to content</a>
-      <Sidebar active={view} dashboard={dashboard} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((value) => !value)} onNavigate={navigate} onOpenDisplay={() => setDisplayOpen(true)} />
+      <Sidebar active={view} dashboard={dashboard} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((value) => !value)} onNavigate={navigate} />
       <div className={cn("transition-[padding] duration-200", sidebarCollapsed ? "lg:pl-20" : "lg:pl-64")}>
-        <PageHeader view={view} dashboard={dashboard} monthLoading={monthLoading} onChangePeriod={goToPeriod} onAddTransaction={() => setTransactionTarget("new")} onOpenDisplay={() => setDisplayOpen(true)} onAsk={askPenny} />
+        <PageHeader view={view} dashboard={dashboard} monthLoading={monthLoading} onChangePeriod={goToPeriod} onAddTransaction={() => setTransactionTarget("new")} onOpenDisplay={() => setDisplayOpen(true)} onNavigate={navigate} />
         <main id="main" tabIndex={-1} className="mx-auto max-w-7xl px-4 pb-[calc(6.5rem+env(safe-area-inset-bottom))] pt-5 focus:outline-none sm:px-6 lg:px-10 lg:pb-12 lg:pt-8">
           <div key={view} className={monthLoading ? "animate-fade opacity-70 transition-opacity duration-200" : "animate-fade transition-opacity duration-200"} aria-busy={monthLoading}>
             {view === "today" && <TodayView dashboard={dashboard} onNavigate={navigate} onAsk={askPenny} />}
             {view === "spending" && <SpendingView dashboard={dashboard} historyVersion={historyVersion} tab={spendingTab} onTabChange={setSpendingTab} recurring={{ onMarkPaid: markBillPaid, onSave: saveBill, onDelete: confirmDeleteBill }} onAsk={askPenny} onSelectMonth={goToMonth} onAddTransaction={() => setTransactionTarget("new")} onEditTransaction={setTransactionTarget} onDeleteTransaction={confirmDeleteTransaction} onAddBudget={() => setBudgetTarget("new")} onEditBudget={setBudgetTarget} onCopyBudgets={copyBudgets} onApplyBudgets={applyBudgetSuggestions} />}
+            {view === "accounts" && <AccountsView dashboard={dashboard} onNavigate={navigate} onAsk={askPenny} />}
             {view === "goals" && <GoalsView dashboard={dashboard} onAsk={askPenny} onAdd={() => setGoalTarget("new")} onEdit={setGoalTarget} onAddMoney={setAddMoneyTarget} onComplete={(goal) => void mutate(() => dashboardApi.updateGoal(goal.id, { status: "completed" }, month), `${goal.name} reached`)} />}
             {view === "invest" && <InvestView dashboard={dashboard} onNavigate={navigate} />}
-            {view === "learn" && <LearnView dashboard={dashboard} onCompleteLesson={completeLesson} onCompleteMission={completeMission} />}
+            {view === "learn" && <LearnView dashboard={dashboard} onCompleteMission={completeMission} onProgress={applyChange} onNavigate={navigate} onAsk={askPenny} />}
             {view === "ai" && <CoachView chat={coachChat} dashboard={dashboard} onDashboardChange={applyChange} onApproved={(message) => toast({ title: "Change applied", description: message })} />}
             {view === "settings" && <SettingsView dashboard={dashboard} save={mutate} />}
           </div>
@@ -348,7 +344,7 @@ function PennyApp() {
         </main>
       </div>
       <MobileNavigation active={view} onNavigate={navigate} />
-      {view !== "ai" && view !== "today" && <button type="button" onClick={() => navigate("ai")} className="fixed bottom-[calc(5.25rem+env(safe-area-inset-bottom))] right-4 z-20 inline-flex min-h-11 items-center gap-2 rounded-full bg-primary px-4 text-sm font-semibold text-on-primary shadow-[var(--shadow-raised)] transition-transform hover:-translate-y-0.5 motion-reduce:transform-none lg:bottom-6 lg:right-6"><Bot className="size-4" />Ask Penny</button>}
+      {view !== "ai" && <button type="button" onClick={() => navigate("ai")} className="fixed bottom-[calc(5.25rem+env(safe-area-inset-bottom))] right-4 z-20 inline-flex min-h-11 items-center gap-2 rounded-full bg-primary px-4 text-sm font-semibold text-on-primary shadow-[var(--shadow-raised)] transition-transform hover:-translate-y-0.5 motion-reduce:transform-none lg:bottom-6 lg:right-6"><Bot className="size-4" />Ask Penny</button>}
 
       <EditDialogs
         dashboard={dashboard}
