@@ -41,6 +41,7 @@ from app.dashboard_models import (
     ForecastEvent,
     ForecastResponse,
     Goal,
+    GoalContribution,
     GoalPatch,
     GoalWrite,
     HistoryMonth,
@@ -220,6 +221,7 @@ class DashboardStore:
                 "current_cents": fixture.savings_goal.current_cents,
                 "target_date": fixture.savings_goal.target_date,
                 "status": "active",
+                "account_id": "acct-savings",
             },
             "goal-laptop": {
                 "id": "goal-laptop",
@@ -228,6 +230,7 @@ class DashboardStore:
                 "current_cents": 30_000,
                 "target_date": date(2027, 1, 31),
                 "status": "active",
+                "account_id": "acct-savings",
             },
         }
         self._missions = [
@@ -338,6 +341,7 @@ class DashboardStore:
             frequency="monthly",
             next_payday=date(2026, 11, 25),
         )
+        self._contributions: list[GoalContribution] = []
         # Fictional learning history so the demo opens with a streak in progress.
         self._lessons_completed: dict[str, date] = {
             "budget-basics": self.today() - timedelta(days=2),
@@ -467,10 +471,18 @@ class DashboardStore:
         return min(max(date.today(), self.active_month), self.active_month.replace(day=last))
 
     def _goal(self, item: dict) -> Goal:
-        remaining = max(0, item["target_cents"] - item["current_cents"])
         target = item["target_date"]
+        mine = [c for c in self._contributions if c.id.startswith(f"{item['id']}:")]
+        this_month = sum(
+            c.amount_cents for c in mine if _same_month(c.occurred_on, self.active_month)
+        )
+        # The monthly need is fixed from where the goal stood when the month began, so adding
+        # money this month counts toward it instead of shrinking it.
+        remaining = max(0, item["target_cents"] - (item["current_cents"] - this_month))
         return Goal(
             **item,
+            contributed_this_month_cents=this_month,
+            recent_contributions=sorted(mine, key=lambda c: c.occurred_on, reverse=True)[:5],
             progress_basis_points=min(
                 10_000, item["current_cents"] * 10_000 // item["target_cents"]
             ),
@@ -942,8 +954,59 @@ class DashboardStore:
                 }
             return self._snapshot(to_month)
 
+    def _default_source(self) -> str:
+        account = next(iter(self._accounts_of("chequing")), None) or next(
+            iter(self._accounts_of(*SPENDABLE_TYPES)), None
+        )
+        if not account:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "Add a chequing account first"
+            )
+        return account.id
+
+    def _move_into_goal(
+        self, goal: dict, amount_cents: int, from_account_id: str, source: str
+    ) -> None:
+        """Moves real money for a goal contribution: out of one account, into the goal's account.
+
+        Total cash is unchanged, but the money is no longer available to spend.
+        """
+        source_account = self._accounts.get(from_account_id)
+        if not source_account or source_account.account_type == "credit":
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "Choose a chequing, savings, or cash account"
+            )
+        if source_account.balance_cents < amount_cents:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                f"{source_account.name} only has {format_cad(source_account.balance_cents)}",
+            )
+        target_id = goal.get("account_id")
+        if target_id != from_account_id:
+            self._accounts[from_account_id] = source_account.model_copy(
+                update={"balance_cents": source_account.balance_cents - amount_cents}
+            )
+            target = self._accounts.get(target_id) if target_id else None
+            if target:
+                self._accounts[target.id] = target.model_copy(
+                    update={"balance_cents": target.balance_cents + amount_cents}
+                )
+        goal["current_cents"] += amount_cents
+        if goal["current_cents"] >= goal["target_cents"]:
+            goal["status"] = "completed"
+        self._contributions.append(
+            GoalContribution(
+                id=f"{goal['id']}:{uuid4().hex[:8]}",
+                amount_cents=amount_cents,
+                from_account_id=from_account_id,
+                to_account_id=target_id,
+                occurred_on=self.today(),
+                source=source,  # type: ignore[arg-type]
+            )
+        )
+
     def contribute_to_goal(
-        self, user_id: str, goal_id: str, amount_cents: int
+        self, user_id: str, goal_id: str, amount_cents: int, from_account_id: str | None = None
     ) -> DashboardResponse:
         with self._lock:
             self.require_owner(user_id)
@@ -958,9 +1021,9 @@ class DashboardStore:
                     status.HTTP_422_UNPROCESSABLE_CONTENT,
                     "That is more than the amount left to reach this goal",
                 )
-            goal["current_cents"] += amount_cents
-            if goal["current_cents"] == goal["target_cents"]:
-                goal["status"] = "completed"
+            self._move_into_goal(
+                goal, amount_cents, from_account_id or self._default_source(), "you"
+            )
             return self._snapshot()
 
     def complete_mission(self, user_id: str, mission_id: str) -> DashboardResponse:
@@ -1513,11 +1576,8 @@ class DashboardStore:
                 )
             if contribution_cents <= 0:
                 raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invalid contribution")
-            goal["current_cents"] = min(
-                goal["target_cents"], goal["current_cents"] + contribution_cents
-            )
-            if goal["current_cents"] >= goal["target_cents"]:
-                goal["status"] = "completed"
+            amount = min(contribution_cents, goal["target_cents"] - goal["current_cents"])
+            self._move_into_goal(goal, amount, self._default_source(), "penny")
             return self._snapshot()
 
     def apply_approved_budget_limit(
@@ -1713,11 +1773,14 @@ class DashboardStore:
         with self._lock:
             self.require_owner(user_id)
             goal_id = f"goal-{uuid4().hex[:12]}"
-            self._goals[goal_id] = {
-                "id": goal_id,
-                **request.model_dump(),
-                "status": "active",
-            }
+            values = request.model_dump()
+            # Keep new goals in savings unless the user picks another account.
+            if values["account_id"] is None:
+                savings = next(iter(self._accounts_of("savings")), None)
+                values["account_id"] = savings.id if savings else None
+            elif values["account_id"] not in self._accounts:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown account")
+            self._goals[goal_id] = {"id": goal_id, **values, "status": "active"}
             return self._snapshot()
 
     def update_goal(self, user_id: str, goal_id: str, request: GoalPatch) -> DashboardResponse:

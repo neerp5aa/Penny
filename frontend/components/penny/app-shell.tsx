@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { LayoutList, LogOut, Menu, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Plus, ShieldCheck, SlidersHorizontal, Sun } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -26,12 +27,9 @@ export const SHORTCUTS: { keys: string; action: string }[] = [
   { keys: "?", action: "Open display settings" },
 ];
 
+/** The Penny coin. Decorative: the name next to it carries the meaning. */
 export function BrandMark({ className }: { className?: string }) {
-  return (
-    <span className={cn("grid size-10 shrink-0 place-items-center rounded-xl bg-[linear-gradient(135deg,#173f5f,#15977f)] text-white shadow-sm", className)} aria-hidden="true">
-      <svg viewBox="0 0 64 64" className="size-6"><path d="M22 48V16h12a10 10 0 0 1 0 20h-6" fill="none" stroke="currentColor" strokeWidth="6" strokeLinecap="round" strokeLinejoin="round" /><circle cx="44" cy="46" r="4" fill="var(--color-gold)" /></svg>
-    </span>
-  );
+  return <Image src="/penny-logo.png" alt="" width={256} height={256} priority className={cn("size-10 shrink-0 drop-shadow-sm", className)} />;
 }
 
 function useSignedInEmail() {

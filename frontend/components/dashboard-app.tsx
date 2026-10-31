@@ -277,7 +277,7 @@ function PennyApp() {
       confirmLabel: "Delete goal",
       noun: "Goal",
       remove: () => dashboardApi.deleteGoal(item.id, month),
-      restore: () => dashboardApi.createGoal({ name: item.name, target_cents: item.target_cents, current_cents: item.current_cents, target_date: item.target_date }, month),
+      restore: () => dashboardApi.createGoal({ name: item.name, target_cents: item.target_cents, current_cents: item.current_cents, target_date: item.target_date, account_id: item.account_id }, month),
     }));
   };
   const copyBudgets = (fromMonth: string) => {
@@ -412,6 +412,7 @@ function EditDialogs({ dashboard, mutate, onCreate, onOpenMonth, transaction, bu
       />
       <GoalDialog
         target={goalTarget}
+        dashboard={dashboard}
         onClose={() => setGoalTarget(null)}
         onRequestDelete={deleteGoal}
         onSubmit={(id, body) => saveAndClose(mutate(() => (id ? dashboardApi.updateGoal(id, body, month) : dashboardApi.createGoal(body, month)), id ? "Goal updated" : "Goal created"), () => setGoalTarget(null))}
@@ -419,7 +420,8 @@ function EditDialogs({ dashboard, mutate, onCreate, onOpenMonth, transaction, bu
       <AddMoneyDialog
         goal={addMoneyTarget}
         onClose={() => setAddMoneyTarget(null)}
-        onSubmit={(goalItem, amount) => saveAndClose(mutate(() => dashboardApi.contributeToGoal(goalItem.id, amount, month), (data) => contributionSaved(goalItem, data)), () => setAddMoneyTarget(null))}
+        dashboard={dashboard}
+        onSubmit={(goalItem, amount, fromAccountId) => saveAndClose(mutate(() => dashboardApi.contributeToGoal(goalItem.id, amount, fromAccountId, month), (data) => contributionSaved(goalItem, data)), () => setAddMoneyTarget(null))}
       />
     </>
   );

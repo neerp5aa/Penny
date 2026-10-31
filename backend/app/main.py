@@ -230,7 +230,9 @@ def contribute_to_goal(
     month: ViewMonth = None,
 ) -> DashboardResponse:
     return _in_view(
-        dashboard_store.contribute_to_goal(current_user.id, goal_id, request.amount_cents),
+        dashboard_store.contribute_to_goal(
+            current_user.id, goal_id, request.amount_cents, request.from_account_id
+        ),
         current_user,
         month,
     )

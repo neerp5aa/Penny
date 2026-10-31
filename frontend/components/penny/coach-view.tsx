@@ -1,11 +1,12 @@
 "use client";
 
 import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, ArrowUp, Bot, Check, CheckCircle2, ChevronRight, Eye, LoaderCircle, LockKeyhole, RotateCcw, ShieldCheck, Sparkles, Wrench } from "lucide-react";
+import { ArrowUp, Bot, Check, ChevronRight, History, LoaderCircle, LockKeyhole, RotateCcw, ShieldCheck, Sparkles, SquarePen, Trash2, Wrench } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { coachApi, type CoachBrief, type CoachProposal, type CoachReply, type CoachRole, type CoachSignal, type Dashboard } from "@/lib/api";
+import { coachApi, type CoachBrief, type CoachProposal, type CoachReply, type CoachRole, type Dashboard } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { cad, describeError } from "./shared";
 
@@ -16,72 +17,125 @@ const MAX_QUESTION_LENGTH = 600;
 type ProposalState = "approving" | "approved" | "dismissed";
 export type CoachMessage = { id: string; role: CoachRole; content: string; reply?: CoachReply };
 type ChatError = { title: string; detail: string };
+export type Conversation = { id: string; title: string; updated_at: string; messages: CoachMessage[]; proposals: Record<string, ProposalState> };
 
-/** Conversation state, owned by the app shell so the chat survives switching tabs. */
+const STORAGE_KEY = "penny-coach-chats";
+const MAX_SAVED_CHATS = 30;
+
+/** Saved chats from this device. Storage can be blocked or hold old data, so failures are ignored. */
+function loadConversations(): Conversation[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "[]") as unknown;
+    return Array.isArray(parsed) ? parsed.filter((item): item is Conversation => typeof item?.id === "string" && Array.isArray(item?.messages)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveConversations(conversations: Conversation[]) {
+  try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations.slice(0, MAX_SAVED_CHATS))); } catch { /* Keep chats in memory. */ }
+}
+
+/**
+ * Conversation state, owned by the app shell so chats survive switching tabs. Every chat is
+ * kept in a history list (saved on this device); "New chat" starts a fresh one.
+ */
 export function useCoachChat() {
-  const [messages, setMessages] = useState<CoachMessage[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>(loadConversations);
+  const [activeId, setActiveId] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<ChatError | null>(null);
-  const [proposals, setProposals] = useState<Record<string, ProposalState>>({});
-  const latest = useRef(messages);
-  useEffect(() => { latest.current = messages; }, [messages]);
+  const latest = useRef({ conversations, activeId });
+  useEffect(() => { latest.current = { conversations, activeId }; }, [conversations, activeId]);
+  useEffect(() => { saveConversations(conversations); }, [conversations]);
+
+  const active = conversations.find((item) => item.id === activeId) ?? null;
+  const messages = active?.messages ?? [];
+
+  /** Applies a change to one conversation and moves it to the top of the list. */
+  const update = useCallback((id: string, change: (conversation: Conversation) => Conversation) => {
+    setConversations((current) => {
+      const target = current.find((item) => item.id === id);
+      if (!target) return current;
+      return [{ ...change(target), updated_at: new Date().toISOString() }, ...current.filter((item) => item.id !== id)];
+    });
+  }, []);
 
   const send = useCallback(async (text: string) => {
     const question = text.trim().slice(0, MAX_QUESTION_LENGTH);
     if (!question || pending) return;
     const userMessage: CoachMessage = { id: crypto.randomUUID(), role: "user", content: question };
-    const thread = [...latest.current, userMessage];
-    setMessages(thread);
+    let id = latest.current.activeId;
+    const existing = latest.current.conversations.find((item) => item.id === id);
+    const thread = [...(existing?.messages ?? []), userMessage];
+    if (!existing) {
+      id = crypto.randomUUID();
+      const created: Conversation = { id, title: question.length > 60 ? `${question.slice(0, 57)}…` : question, updated_at: new Date().toISOString(), messages: thread, proposals: {} };
+      setConversations((current) => [created, ...current]);
+      setActiveId(id);
+    } else {
+      update(existing.id, (conversation) => ({ ...conversation, messages: thread }));
+    }
+    const conversationId = id as string;
     setPending(true);
     setError(null);
     try {
       const history = thread.slice(-HISTORY_LIMIT - 1).map(({ role, content }) => ({ role, content }));
       while (history[0]?.role === "assistant") history.shift();
       const reply = await coachApi.chat(history);
-      setMessages((current) => [...current, { id: crypto.randomUUID(), role: "assistant", content: reply.reply, reply }]);
+      update(conversationId, (conversation) => ({ ...conversation, messages: [...conversation.messages, { id: crypto.randomUUID(), role: "assistant", content: reply.reply, reply }] }));
     } catch (reason) {
       setError(describeError(reason, "Penny couldn’t answer"));
     } finally {
       setPending(false);
     }
-  }, [pending]);
+  }, [pending, update]);
 
   /** Resends the last question after a failure. */
   const retry = useCallback(() => {
-    const last = latest.current.at(-1);
-    if (last?.role !== "user") return;
-    setMessages((current) => current.slice(0, -1));
-    latest.current = latest.current.slice(0, -1);
+    const id = latest.current.activeId;
+    const conversation = latest.current.conversations.find((item) => item.id === id);
+    const last = conversation?.messages.at(-1);
+    if (!conversation || last?.role !== "user") return;
+    const trimmed = { ...conversation, messages: conversation.messages.slice(0, -1) };
+    latest.current = { ...latest.current, conversations: latest.current.conversations.map((item) => (item.id === trimmed.id ? trimmed : item)) };
+    update(conversation.id, () => trimmed);
     void send(last.content);
-  }, [send]);
+  }, [send, update]);
 
-  const reset = useCallback(() => { setMessages([]); setError(null); setProposals({}); }, []);
-  const setProposal = useCallback((id: string, state: ProposalState | null) => {
-    setProposals((current) => {
-      const next = { ...current };
-      if (state) next[id] = state; else delete next[id];
-      return next;
-    });
+  const newChat = useCallback(() => { setActiveId(null); setError(null); }, []);
+  const open = useCallback((id: string) => { setActiveId(id); setError(null); }, []);
+  const remove = useCallback((id: string) => {
+    setConversations((current) => current.filter((item) => item.id !== id));
+    setActiveId((current) => (current === id ? null : current));
   }, []);
+  const setProposal = useCallback((proposalId: string, state: ProposalState | null) => {
+    const id = latest.current.activeId;
+    if (!id) return;
+    update(id, (conversation) => {
+      const next = { ...conversation.proposals };
+      if (state) next[proposalId] = state; else delete next[proposalId];
+      return { ...conversation, proposals: next };
+    });
+  }, [update]);
 
-  return { messages, pending, error, proposals, send, retry, reset, setProposal };
+  return { conversations, activeId, messages, proposals: active?.proposals ?? {}, pending, error, send, retry, newChat, open, remove, setProposal };
 }
 
 export type CoachChat = ReturnType<typeof useCoachChat>;
 
 export function CoachView({ chat, dashboard, onDashboardChange, onApproved }: { chat: CoachChat; dashboard: Dashboard; onDashboardChange: (dashboard: Dashboard) => void; onApproved: (message: string) => void }) {
   const [brief, setBrief] = useState<CoachBrief | null>(null);
-  const [briefError, setBriefError] = useState(false);
   const [approvalError, setApprovalError] = useState<ChatError | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const { messages, pending, error } = chat;
 
-  // Refresh the check-in whenever the underlying data changes (for example after an approval).
+  // The greeting and suggested questions follow the latest data (for example after an approval).
   useEffect(() => {
     let active = true;
-    coachApi.brief()
-      .then((data) => { if (active) { setBrief(data); setBriefError(false); } })
-      .catch(() => { if (active) setBriefError(true); });
+    coachApi.brief().then((data) => { if (active) setBrief(data); }).catch(() => undefined);
     return () => { active = false; };
   }, [dashboard]);
 
@@ -104,110 +158,119 @@ export function CoachView({ chat, dashboard, onDashboardChange, onApproved }: { 
   }
 
   const lastAssistant = messages.findLast((message) => message.role === "assistant");
+  const historyList = <ChatHistory chat={chat} onPicked={() => setHistoryOpen(false)} />;
 
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-4">
-      <CheckIn brief={brief} failed={briefError} compact={messages.length > 0} disabled={pending} onAsk={(text) => void chat.send(text)} />
+    <div className="mx-auto grid max-w-6xl gap-6 lg:grid-cols-[16rem_minmax(0,1fr)]">
+      <aside aria-label="Chat history" className="hidden lg:block">
+        <div className="sticky top-28">{historyList}</div>
+      </aside>
 
-      {messages.length > 0 && (
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-ink-muted">Conversation</h2>
-          <Button variant="ghost" size="sm" onClick={chat.reset} disabled={pending}><RotateCcw className="size-4" aria-hidden="true" />New chat</Button>
-        </div>
-      )}
-
-      <div role="log" aria-live="polite" aria-busy={pending} aria-label="Conversation with Penny AI" className="space-y-4">
-        {messages.map((message) => message.role === "user"
-          ? <UserBubble key={message.id} text={message.content} />
-          : (
-            <AssistantMessage
-              key={message.id}
-              reply={message.reply!}
-              proposalState={message.reply?.proposal ? chat.proposals[message.reply.proposal.id] : undefined}
-              showFollowUps={message === lastAssistant && !pending}
-              disabled={pending}
-              onAsk={(text) => void chat.send(text)}
-              onApprove={(proposal) => void approve(proposal)}
-              onDismiss={(proposal) => chat.setProposal(proposal.id, "dismissed")}
-            />
-          ))}
-        {pending && <Thinking />}
-        {error && (
-          <div role="alert" className="flex flex-col gap-3 rounded-2xl border border-danger/25 bg-danger-soft p-4 sm:flex-row sm:items-center sm:justify-between">
-            <div><p className="font-semibold text-danger">{error.title}</p><p className="mt-1 text-sm text-ink-muted">{error.detail}</p></div>
-            <Button variant="outline" size="sm" onClick={chat.retry}><RotateCcw className="size-4" aria-hidden="true" />Try again</Button>
+      <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="truncate text-sm font-semibold text-ink-muted">{chat.activeId ? chat.conversations.find((item) => item.id === chat.activeId)?.title : "New chat"}</h2>
+          <div className="flex shrink-0 gap-2">
+            <Button variant="outline" size="sm" className="lg:hidden" onClick={() => setHistoryOpen(true)}><History className="size-4" aria-hidden="true" />Chats{chat.conversations.length > 0 && <span className="tabular text-ink-subtle">{chat.conversations.length}</span>}</Button>
+            {messages.length > 0 && <Button variant="ghost" size="sm" onClick={chat.newChat} disabled={pending}><SquarePen className="size-4" aria-hidden="true" />New chat</Button>}
           </div>
-        )}
-        {approvalError && <p role="alert" className="rounded-xl bg-danger-soft p-3 text-sm text-danger">{approvalError.title}: {approvalError.detail}</p>}
-        <div ref={endRef} />
+        </div>
+
+        {messages.length === 0 && <Welcome name={dashboard.profile.display_name.split(" ")[0]} questions={brief?.suggested_questions} disabled={pending} onAsk={(text) => void chat.send(text)} />}
+
+        <div role="log" aria-live="polite" aria-busy={pending} aria-label="Conversation with Penny AI" className="space-y-4">
+          {messages.map((message) => message.role === "user"
+            ? <UserBubble key={message.id} text={message.content} />
+            : (
+              <AssistantMessage
+                key={message.id}
+                reply={message.reply!}
+                proposalState={message.reply?.proposal ? chat.proposals[message.reply.proposal.id] : undefined}
+                showFollowUps={message === lastAssistant && !pending}
+                disabled={pending}
+                onAsk={(text) => void chat.send(text)}
+                onApprove={(proposal) => void approve(proposal)}
+                onDismiss={(proposal) => chat.setProposal(proposal.id, "dismissed")}
+              />
+            ))}
+          {pending && <Thinking />}
+          {error && (
+            <div role="alert" className="flex flex-col gap-3 rounded-2xl border border-danger/25 bg-danger-soft p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div><p className="font-semibold text-danger">{error.title}</p><p className="mt-1 text-sm text-ink-muted">{error.detail}</p></div>
+              <Button variant="outline" size="sm" onClick={chat.retry}><RotateCcw className="size-4" aria-hidden="true" />Try again</Button>
+            </div>
+          )}
+          {approvalError && <p role="alert" className="rounded-xl bg-danger-soft p-3 text-sm text-danger">{approvalError.title}: {approvalError.detail}</p>}
+          <div ref={endRef} />
+        </div>
+
+        <Composer disabled={pending} onSend={(text) => void chat.send(text)} />
+        <p className="flex items-start gap-2 px-1 text-xs leading-relaxed text-ink-subtle">
+          <ShieldCheck className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+          Educational guidance using fictional data. Every amount Penny quotes is checked against your records, and nothing changes without your approval. Chats are saved on this device.
+        </p>
       </div>
 
-      <Composer disabled={pending} onSend={(text) => void chat.send(text)} />
-      <p className="flex items-start gap-2 px-1 text-xs leading-relaxed text-ink-subtle">
-        <ShieldCheck className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-        Educational guidance using fictional data. Every amount Penny quotes is checked against your records, and nothing changes without your approval.
-      </p>
+      <Dialog open={historyOpen} onOpenChange={setHistoryOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Your chats</DialogTitle><DialogDescription>Saved on this device.</DialogDescription></DialogHeader>
+          {historyList}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-const SIGNAL_STYLE: Record<CoachSignal["tone"], { icon: typeof Eye; className: string; label: string }> = {
-  alert: { icon: AlertTriangle, className: "bg-danger-soft text-danger", label: "Needs attention" },
-  watch: { icon: Eye, className: "bg-gold-soft text-gold-strong", label: "Keep an eye on" },
-  positive: { icon: CheckCircle2, className: "bg-accent-soft text-accent-strong", label: "Going well" },
-};
-
-function CheckIn({ brief, failed, compact, disabled, onAsk }: { brief: CoachBrief | null; failed: boolean; compact: boolean; disabled: boolean; onAsk: (text: string) => void }) {
-  if (failed && !brief) {
-    return <Card className="p-5"><p className="font-semibold text-ink">Ask Penny anything about your money</p><p className="mt-1 text-sm text-ink-subtle">Your check-in couldn’t load, but you can still ask a question below.</p></Card>;
-  }
-  if (!brief) {
-    return <Card className="flex items-center gap-3 p-5" role="status"><LoaderCircle className="size-5 animate-spin text-accent" aria-hidden="true" /><span className="text-sm text-ink-muted">Reading your month…</span></Card>;
-  }
-  const signals = (
-    <ul className="grid gap-2 sm:grid-cols-2">
-      {brief.signals.map((signal) => {
-        const style = SIGNAL_STYLE[signal.tone];
-        const Icon = style.icon;
-        return (
-          <li key={signal.id}>
-            <button type="button" disabled={disabled} onClick={() => onAsk(signal.prompt)} className="group flex min-h-11 w-full items-start gap-3 rounded-2xl border border-line bg-surface p-3 text-left transition-colors hover:border-accent hover:bg-sage-soft disabled:opacity-60">
-              <span className={cn("grid size-8 shrink-0 place-items-center rounded-xl", style.className)}><Icon className="size-4" aria-hidden="true" /><span className="sr-only">{style.label}</span></span>
-              <span className="min-w-0 flex-1"><span className="block text-sm font-semibold text-ink">{signal.title}</span><span className="mt-0.5 block text-sm text-ink-muted">{signal.detail}</span></span>
-              <ChevronRight className="mt-1 size-4 shrink-0 text-ink-subtle transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
-            </button>
-          </li>
-        );
-      })}
-    </ul>
-  );
-
-  if (compact) {
-    return (
-      <details className="group rounded-[var(--radius-card)] border border-line bg-surface shadow-[var(--shadow-card)]">
-        <summary className="flex min-h-12 cursor-pointer list-none items-center justify-between gap-3 px-4 text-sm font-semibold text-ink [&::-webkit-details-marker]:hidden">
-          <span className="flex items-center gap-2"><Sparkles className="size-4 text-accent" aria-hidden="true" />{brief.month_label} check-in</span>
-          <ChevronRight className="size-4 text-ink-subtle transition-transform group-open:rotate-90" aria-hidden="true" />
-        </summary>
-        <div className="border-t border-line p-3">{signals}</div>
-      </details>
-    );
-  }
-
+/** Past conversations, newest first, with a button to start a new one. */
+function ChatHistory({ chat, onPicked }: { chat: CoachChat; onPicked: () => void }) {
   return (
-    <section aria-labelledby="checkin-title" className="space-y-4">
+    <nav aria-label="Past chats" className="space-y-3">
+      <Button className="w-full" onClick={() => { chat.newChat(); onPicked(); }} disabled={chat.pending}><SquarePen className="size-4" aria-hidden="true" />New chat</Button>
+      {chat.conversations.length === 0 ? <p className="px-1 text-sm text-ink-subtle">Your chats will appear here.</p> : (
+        <ul className="space-y-1">
+          {chat.conversations.map((conversation) => {
+            const current = conversation.id === chat.activeId;
+            return (
+              <li key={conversation.id} className={cn("group flex items-center rounded-xl transition-colors", current ? "bg-primary-soft" : "hover:bg-sage-soft")}>
+                <button type="button" aria-current={current ? "true" : undefined} onClick={() => { chat.open(conversation.id); onPicked(); }} className="min-h-12 min-w-0 flex-1 px-3 py-2 text-left">
+                  <span className={cn("block truncate text-sm", current ? "font-semibold text-ink" : "text-ink")}>{conversation.title}</span>
+                  <span className="block text-xs text-ink-subtle">{relativeDay(conversation.updated_at)} · {Math.ceil(conversation.messages.length / 2)} question{conversation.messages.length > 2 ? "s" : ""}</span>
+                </button>
+                <button type="button" onClick={() => chat.remove(conversation.id)} className="grid size-10 shrink-0 place-items-center rounded-lg text-ink-subtle opacity-70 hover:bg-danger-soft hover:text-danger group-hover:opacity-100" aria-label={`Delete chat: ${conversation.title}`}><Trash2 className="size-4" aria-hidden="true" /></button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </nav>
+  );
+}
+
+function relativeDay(iso: string): string {
+  const then = new Date(iso);
+  const days = Math.floor((Date.now() - then.getTime()) / 86_400_000);
+  if (days <= 0) return then.toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit" });
+  if (days === 1) return "Yesterday";
+  if (days < 7) return then.toLocaleDateString("en-CA", { weekday: "long" });
+  return then.toLocaleDateString("en-CA", { month: "short", day: "numeric" });
+}
+
+const FALLBACK_QUESTIONS = ["What should I focus on this week?", "Where am I overspending?", "Can I afford a $150 concert ticket?"];
+
+/** A short welcome and a few questions to start with. */
+function Welcome({ name, questions = FALLBACK_QUESTIONS, disabled, onAsk }: { name: string; questions?: string[]; disabled: boolean; onAsk: (text: string) => void }) {
+  return (
+    <section aria-labelledby="welcome-title" className="space-y-4">
       <div className="rounded-[var(--radius-card)] bg-hero p-5 text-white shadow-[var(--shadow-raised)] sm:p-6">
         <div className="flex items-start gap-3">
           <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-white/15" aria-hidden="true"><Sparkles className="size-5" /></span>
           <div>
-            <h2 id="checkin-title" className="text-xl font-semibold tracking-tight sm:text-2xl">{brief.greeting}</h2>
-            <p className="mt-1 text-sm text-white/75">I’ve read your budgets, bills, goals, and spending. Tap anything below, or ask your own question.</p>
+            <h2 id="welcome-title" className="text-xl font-semibold tracking-tight sm:text-2xl">Hi {name}, how can I help?</h2>
+            <p className="mt-1 text-sm text-white/75">I know your budgets, bills, goals, and spending. Ask me anything, or start with one of these.</p>
           </div>
         </div>
       </div>
-      {signals}
       <div className="flex flex-wrap gap-2" aria-label="Suggested questions">
-        {brief.suggested_questions.map((question) => <Chip key={question} disabled={disabled} onClick={() => onAsk(question)}>{question}</Chip>)}
+        {questions.map((question) => <Chip key={question} disabled={disabled} onClick={() => onAsk(question)}>{question}</Chip>)}
       </div>
     </section>
   );

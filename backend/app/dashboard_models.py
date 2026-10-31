@@ -38,6 +38,17 @@ class MonthlyBudget(DashboardModel):
     carried_over: bool = False
 
 
+class GoalContribution(DashboardModel):
+    """Money moved into a goal: out of one account and into the goal's account."""
+
+    id: str
+    amount_cents: int = Field(gt=0)
+    from_account_id: str
+    to_account_id: str | None
+    occurred_on: date
+    source: Literal["you", "penny"]
+
+
 class Goal(DashboardModel):
     id: str
     name: str
@@ -48,6 +59,10 @@ class Goal(DashboardModel):
     progress_basis_points: int = Field(ge=0, le=10_000)
     # Even monthly saving needed to reach the target by its date; None without a date.
     monthly_needed_cents: int | None = None
+    # Where the saved money is held; contributions move money into this account.
+    account_id: str | None = None
+    contributed_this_month_cents: int = Field(default=0, ge=0)
+    recent_contributions: list[GoalContribution] = []
 
 
 class Mission(DashboardModel):
@@ -362,6 +377,7 @@ class GoalWrite(DashboardModel):
     target_cents: int = Field(gt=0)
     current_cents: int = Field(ge=0)
     target_date: date | None = None
+    account_id: str | None = None
 
 
 class GoalPatch(DashboardModel):
@@ -370,6 +386,7 @@ class GoalPatch(DashboardModel):
     current_cents: int | None = Field(default=None, ge=0)
     target_date: date | None = None
     status: Literal["active", "completed", "paused"] | None = None
+    account_id: str | None = None
 
 
 class BudgetCopyRequest(DashboardModel):
@@ -379,6 +396,8 @@ class BudgetCopyRequest(DashboardModel):
 
 class GoalContributionRequest(DashboardModel):
     amount_cents: int = Field(gt=0)
+    # Where the money comes from; defaults to the main chequing account.
+    from_account_id: str | None = None
 
 
 class HistoryMonth(DashboardModel):
